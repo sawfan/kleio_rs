@@ -1,0 +1,10 @@
+[package]
+name = "kleio"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rkyv = "0.8.16"
