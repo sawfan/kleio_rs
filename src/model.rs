@@ -144,20 +144,6 @@ pub enum EventKind {
     Other(String),
 }
 
-/// ADB-specific “astrology positions” are modeled as optional extra data.
-///
-/// This keeps the core genealogy event type usable for non-astrology sources,
-/// while still allowing lossless ADB import.
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
-pub struct AstroPositions {
-    pub sun_sign: Option<String>,
-    pub sun_degmin: Option<String>,
-    pub moon_sign: Option<String>,
-    pub moon_degmin: Option<String>,
-    pub asc_sign: Option<String>,
-    pub asc_degmin: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct Event {
     pub id: EventId,
@@ -165,13 +151,11 @@ pub struct Event {
 
     pub date: Option<DateValue>,
 
-    /// Source-specific time string (may be "local" time).
+    /// Source-specific time string (may be local time).
     pub time: Option<String>,
 
     /// Source-specific time zone string.
     pub time_zone: Option<String>,
-
-    pub positions: Option<AstroPositions>,
 
     pub place: Option<PlaceId>,
 

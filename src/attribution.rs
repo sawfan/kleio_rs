@@ -1,8 +1,8 @@
 //! Generic attribution / provenance hooks.
 //!
-//! The core genealogy model should stay source-agnostic, but we still need to
-//! preserve source-specific fields (e.g. ADB Rodden rating, categories, etc.)
-//! and eventually support GEDCOM 7 round-trips.
+//! The core model should stay source-agnostic, while still preserving
+//! importer-specific fields and supporting future exchange formats such as
+//! GEDCOM 7.
 //!
 //! This module provides lightweight, extensible structures that can be attached
 //! to model entities without hard-coding source schemas.
@@ -12,17 +12,17 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// A globally unique identifier for the originating source record.
 ///
 /// Examples:
-/// - `adb:1234`
 /// - `gedcom7:I42`
 /// - `wikidata:Q123`
+/// - `local:person:7`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 pub struct SourceRef(pub String);
 
 /// A simple namespaced tag.
 ///
 /// Examples:
-/// - `adb:category:Actors`
 /// - `user:tag:NeedsReview`
+/// - `import:category:Artists`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 pub struct Tag(pub String);
 

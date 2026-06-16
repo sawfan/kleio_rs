@@ -1,11 +1,11 @@
-//! Kleio: source-agnostic genealogy primitives.
+//! Kleio: source-agnostic people and event primitives.
 //!
 //! This crate provides a normalized people/events/places model plus derived
 //! indexes that can be archived with `rkyv` for fast load times.
 //!
 //! Design goals:
-//! - Import from multiple sources (Astrodatabank, GEDCOM 7, etc.) into a common model.
-//! - Preserve source-specific details via generic attribution/tags without baking in
+//! - Represent people, events, families, places, notes, and provenance in a common model.
+//! - Preserve importer-specific details via generic attribution/tags without baking in
 //!   any single upstream schema.
 //! - Provide ergonomic runtime access (`GenealogyStore`) on top of archived bytes.
 

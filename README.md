@@ -1,16 +1,18 @@
 # kleio (kleio_rs)
 
-Source-agnostic genealogy primitives for Rust.
+Source-agnostic people and event primitives for Rust.
 
-`kleio` is intended to be a **core model crate** that multiple importers/exporters can target.
-In this workspace, `adbimport` becomes an adapter that converts Astrodatabank XML into `kleio` types.
+`kleio` is intended to be a **core model crate** that multiple importers,
+exporters, and applications can target. In this workspace, Ourania can use it as
+the shared representation for people, life events, places, families, notes, and
+provenance.
 
 ## Goals
 
 - Provide a **normalized people/events/families/places/notes** model suitable for:
-  - Astrodatabank imports (including astro-specific computed/recorded fields)
+  - application-owned people and event records
   - GEDCOM 7 import/export
-  - other sources (custom apps, APIs, etc.)
+  - other importers, APIs, and archival formats
 - Preserve as much upstream data as possible without hard-tying the core to any one source.
 - Enable **fast load times** via `rkyv` archived snapshots (`GenealogyArchive`) with a runtime wrapper (`GenealogyStore`).
 
@@ -23,27 +25,22 @@ In this workspace, `adbimport` becomes an adapter that converts Astrodatabank XM
   - Derived indexes + archived snapshot types: `SearchIndexArchive`, `DateIndexArchive`, `GenealogyArchive`
   - Runtime access wrapper over archived bytes: `GenealogyStore`
 
-- `adbimport`:
-  - ADB XML serde structs (`PublicData`, `ResearchData`, etc.)
-  - Conversion/parsing logic (`parse_astrodatabank`) that produces `kleio` records
+- Importer crates:
+  - Parse source-specific formats.
+  - Convert them into `kleio` records.
+  - Preserve source-specific values through `Provenance.attributes`, `Provenance.tags`, `SourceRef`, and `Citation`.
 
 ## Notes on flexibility / lossless import
 
-Real-world genealogy data has:
-- multiple competing assertions (two birth times)
+Real-world person and event data has:
+- multiple competing assertions (for example, two possible birth times)
 - varying confidence / evidence
-- source-specific classifications (e.g. ADB categories, Rodden rating)
+- source-specific classifications and fields
 
 The core approach in `kleio` is:
-- keep common genealogical concepts first-class (Birth/Death/Marriage/Baptism/etc.)
+- keep common concepts first-class (Birth/Death/Marriage/Baptism/etc.)
 - keep uncommon or source-specific concepts as `EventKind::Other(String)`
 - attach extra source-specific metadata as generic `Provenance` (attributes/tags/citations)
-
-### ADB specifics
-
-ADB fields like `roddenrating`, `datatype`, `categories`, etc. are expected to be retained via `Provenance.attributes` / `Provenance.tags` rather than requiring ADB-specific struct fields in the core model.
-
-ADB’s `positions` are modeled as `Event.positions: Option<AstroPositions>` on the relevant event (typically Birth). This keeps the model useful for non-astrology sources while still supporting ADB.
 
 ## GEDCOM 7 (planned)
 
@@ -57,5 +54,5 @@ A future `kleio_gedcom7` (or similar) crate can:
 
 ## Status
 
-This crate is under active development. The current focus is establishing the core types and ensuring `adbimport` can translate ADB XML into `kleio` archives.
-
+This crate is under active development. The current focus is establishing the core types
+for people/events data that Ourania and external importers can share.
