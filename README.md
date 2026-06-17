@@ -58,51 +58,55 @@ being merged directly into Kleio's permanent genealogy structs.
 Safe defaults are bounded (`--max-lines 100000`, `--max-facts 10000`) and write
 to `target/wikidata-sample.ndjson`.
 
+Because decompression support is intentionally development-only, run the importer
+as the `wikidata_import` example. This keeps `bzip2` in `dev-dependencies` and
+out of any released Kleio library/product dependency graph.
+
 Examples:
 
 - Import the first 1 million decompressed lines:
 
-  `cargo run -p kleio -- import wikidata-truthy --dump-path vendor/latest-truthy.nt.bz2 --max-lines 1000000 --progress-every 100000`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-truthy --dump-path vendor/latest-truthy.nt.bz2 --max-lines 1000000 --progress-every 100000`
 
 - Stop after 10,000 relevant facts:
 
-  `cargo run -p kleio -- import wikidata-truthy --max-facts 10000`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-truthy --max-facts 10000`
 
 - Sample facts for one subject while scanning a bounded prefix of the dump:
 
-  `cargo run -p kleio -- import wikidata-truthy --subject Q42 --max-lines 5000000`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-truthy --subject Q42 --max-lines 5000000`
 
   If you are sampling one subject from the subject-grouped truthy dump, you can
   usually stop as soon as the first later relevant subject is seen:
 
-  `cargo run -p kleio -- import wikidata-truthy --subject Q42 --stop-after-subject --max-lines 5000000`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-truthy --subject Q42 --stop-after-subject --max-lines 5000000`
 
 - Build a one-hop closure from a sampled fact set. This re-streams the dump and
   imports relevant facts whose subjects are either original subjects or QID
   entity values referenced by the seed file:
 
-  `cargo run -p kleio -- import wikidata-closure --seed-path target/wikidata-sample.ndjson --max-lines 1000000`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-closure --seed-path target/wikidata-sample.ndjson --max-lines 1000000`
 
 - Generate a sorted QID seed list for building a small external label cache:
 
-  `cargo run -p kleio -- import wikidata-label-seeds --input-path target/wikidata-closure.ndjson`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-label-seeds --input-path target/wikidata-closure.ndjson`
 
   Draft generation can then apply an optional JSON label cache shaped like
   `{ "Q42": "Douglas Adams", "Q350": "Cambridge" }`:
 
-  `cargo run -p kleio -- import wikidata-drafts --input-path target/wikidata-closure.ndjson --label-cache target/wikidata-labels.json`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-drafts --input-path target/wikidata-closure.ndjson --label-cache target/wikidata-labels.json`
 
 - Build experimental Kleio-oriented person drafts from sampled facts:
 
-  `cargo run -p kleio -- import wikidata-drafts --input-path target/wikidata-sample.ndjson`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-drafts --input-path target/wikidata-sample.ndjson`
 
 - Summarize draft completeness before building an archive:
 
-  `cargo run -p kleio -- import wikidata-drafts-summary --input-path target/wikidata-person-drafts.ndjson`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-drafts-summary --input-path target/wikidata-person-drafts.ndjson`
 
 - Convert draft NDJSON into a tiny experimental Kleio `.rkyv` archive:
 
-  `cargo run -p kleio -- import wikidata-kleio --input-path target/wikidata-person-drafts.ndjson`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-kleio --input-path target/wikidata-person-drafts.ndjson`
 
   This prototype projection creates people, birth/death/occupation events,
   minimal parent/spouse families when the related person is present in the same
@@ -111,7 +115,7 @@ Examples:
 
 - Inspect/validate the generated archive:
 
-  `cargo run -p kleio -- import wikidata-kleio-inspect --path target/wikidata-kleio.rkyv`
+  `cargo run -p kleio --example wikidata_import -- import wikidata-kleio-inspect --path target/wikidata-kleio.rkyv`
 
 ## GEDCOM 7 (planned)
 

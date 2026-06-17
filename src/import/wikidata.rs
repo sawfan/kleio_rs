@@ -1,7 +1,9 @@
-//! Experimental streaming import for Wikidata `latest-truthy.nt.bz2` dumps.
+//! Experimental streaming import helpers for Wikidata truthy dumps.
 //!
 //! This module deliberately implements only the small slice of N-Triples parsing
 //! needed for an exploratory Kleio ETL path. It is not a general RDF engine.
+//! Compressed-dump processing lives in the `wikidata_import` example, where it
+//! can use dev-dependencies without becoming part of Kleio's released library API.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -9,7 +11,6 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use bzip2::read::BzDecoder;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::archive_genealogy_archive;
@@ -798,7 +799,8 @@ pub fn collect_referenced_qids_from_facts(path: &Path) -> io::Result<HashSet<Str
     Ok(qids)
 }
 
-pub fn run_truthy_closure_import(
+pub fn run_truthy_closure_import_from_reader<R: BufRead>(
+    reader: R,
     options: &WikidataClosureOptions,
 ) -> io::Result<WikidataClosureReport> {
     if options.max_lines == 0 || options.max_facts == 0 {
@@ -820,9 +822,7 @@ pub fn run_truthy_closure_import(
         options.seed_path.display()
     );
 
-    let dump = File::open(&options.dump_path)?;
-    let decoder = BzDecoder::new(dump);
-    let mut reader = BufReader::with_capacity(1024 * 1024, decoder);
+    let mut reader = reader;
 
     prepare_output_parent(&options.output_path)?;
     let output = OpenOptions::new()
@@ -1009,7 +1009,10 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     }
 }
 
-pub fn run_truthy_import(options: &TruthyImportOptions) -> io::Result<TruthyImportReport> {
+pub fn run_truthy_import_from_reader<R: BufRead>(
+    reader: R,
+    options: &TruthyImportOptions,
+) -> io::Result<TruthyImportReport> {
     if options.max_lines == 0 || options.max_facts == 0 {
         eprintln!("wikidata-truthy: max-lines and max-facts are bounded to zero; nothing to do");
         return Ok(TruthyImportReport {
@@ -1021,9 +1024,7 @@ pub fn run_truthy_import(options: &TruthyImportOptions) -> io::Result<TruthyImpo
         });
     }
 
-    let dump = File::open(&options.dump_path)?;
-    let decoder = BzDecoder::new(dump);
-    let mut reader = BufReader::with_capacity(1024 * 1024, decoder);
+    let mut reader = reader;
 
     prepare_output_parent(&options.output_path)?;
     let output = OpenOptions::new()
