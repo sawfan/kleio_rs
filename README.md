@@ -96,6 +96,10 @@ Examples:
 
   `cargo run -p kleio -- import wikidata-drafts --input-path target/wikidata-sample.ndjson`
 
+- Summarize draft completeness before building an archive:
+
+  `cargo run -p kleio -- import wikidata-drafts-summary --input-path target/wikidata-person-drafts.ndjson`
+
 - Convert draft NDJSON into a tiny experimental Kleio `.rkyv` archive:
 
   `cargo run -p kleio -- import wikidata-kleio --input-path target/wikidata-person-drafts.ndjson`

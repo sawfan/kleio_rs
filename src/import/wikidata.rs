@@ -235,6 +235,13 @@ pub struct WikidataKleioInspectReport {
     pub notes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WikidataDraftSummaryReport {
+    pub input_path: PathBuf,
+    pub drafts_read: u64,
+    pub humans: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum PlaceRole {
     Birth,
@@ -244,7 +251,9 @@ enum PlaceRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WikidataPersonDraft {
     pub qid: String,
+    #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
     pub labels: BTreeMap<String, String>,
     pub is_human: bool,
     pub instance_of_qids: Vec<String>,
@@ -425,6 +434,118 @@ pub fn inspect_kleio_archive(path: &Path) -> io::Result<WikidataKleioInspectRepo
     );
 
     Ok(report)
+}
+
+pub fn summarize_person_drafts(
+    path: &Path,
+    limit: usize,
+) -> io::Result<WikidataDraftSummaryReport> {
+    let input = File::open(path)?;
+    let reader = BufReader::with_capacity(1024 * 1024, input);
+    let mut drafts_read = 0_u64;
+    let mut humans = 0_u64;
+    let mut aggregate = DraftAggregateSummary::default();
+    let mut examples = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let draft: WikidataPersonDraft = serde_json::from_str(&line).map_err(io::Error::other)?;
+        drafts_read += 1;
+        if draft.is_human {
+            humans += 1;
+        }
+        aggregate.record(&draft);
+        if examples.len() < limit {
+            examples.push(draft);
+        }
+    }
+
+    eprintln!(
+        "wikidata-drafts summary: {} drafts ({} humans) from {}",
+        drafts_read,
+        humans,
+        path.display()
+    );
+    aggregate.print();
+    if !examples.is_empty() {
+        eprintln!("wikidata-drafts examples:");
+        for draft in &examples {
+            eprintln!(
+                "  {}{} facts={} birth_dates={} death_dates={} parents={} spouses={} children={} occupations={}",
+                draft.qid,
+                draft
+                    .label
+                    .as_ref()
+                    .map(|label| format!(" ({label})"))
+                    .unwrap_or_default(),
+                draft.source_fact_count,
+                draft.birth_dates.len(),
+                draft.death_dates.len(),
+                draft.father_qids.len() + draft.mother_qids.len(),
+                draft.spouse_qids.len(),
+                draft.child_qids.len(),
+                draft.occupation_qids.len(),
+            );
+        }
+    }
+
+    Ok(WikidataDraftSummaryReport {
+        input_path: path.to_path_buf(),
+        drafts_read,
+        humans,
+    })
+}
+
+#[derive(Debug, Default)]
+struct DraftAggregateSummary {
+    with_label: u64,
+    with_birth_date: u64,
+    with_death_date: u64,
+    with_birth_place: u64,
+    with_death_place: u64,
+    with_parent: u64,
+    with_spouse: u64,
+    with_child: u64,
+    with_sibling: u64,
+    with_occupation: u64,
+    total_occupation_values: u64,
+    total_label_values: u64,
+}
+
+impl DraftAggregateSummary {
+    fn record(&mut self, draft: &WikidataPersonDraft) {
+        self.with_label += u64::from(draft.label.is_some());
+        self.with_birth_date += u64::from(!draft.birth_dates.is_empty());
+        self.with_death_date += u64::from(!draft.death_dates.is_empty());
+        self.with_birth_place += u64::from(!draft.birth_place_qids.is_empty());
+        self.with_death_place += u64::from(!draft.death_place_qids.is_empty());
+        self.with_parent +=
+            u64::from(!draft.father_qids.is_empty() || !draft.mother_qids.is_empty());
+        self.with_spouse += u64::from(!draft.spouse_qids.is_empty());
+        self.with_child += u64::from(!draft.child_qids.is_empty());
+        self.with_sibling += u64::from(!draft.sibling_qids.is_empty());
+        self.with_occupation += u64::from(!draft.occupation_qids.is_empty());
+        self.total_occupation_values += draft.occupation_qids.len() as u64;
+        self.total_label_values += draft.labels.len() as u64;
+    }
+
+    fn print(&self) {
+        eprintln!("  with_label={}", self.with_label);
+        eprintln!("  with_birth_date={}", self.with_birth_date);
+        eprintln!("  with_death_date={}", self.with_death_date);
+        eprintln!("  with_birth_place={}", self.with_birth_place);
+        eprintln!("  with_death_place={}", self.with_death_place);
+        eprintln!("  with_parent={}", self.with_parent);
+        eprintln!("  with_spouse={}", self.with_spouse);
+        eprintln!("  with_child={}", self.with_child);
+        eprintln!("  with_sibling={}", self.with_sibling);
+        eprintln!("  with_occupation={}", self.with_occupation);
+        eprintln!("  total_occupation_values={}", self.total_occupation_values);
+        eprintln!("  total_label_values={}", self.total_label_values);
+    }
 }
 
 fn build_genealogy_index_from_drafts(drafts: &[WikidataPersonDraft]) -> GenealogyIndex {

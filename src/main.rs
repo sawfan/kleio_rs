@@ -7,8 +7,8 @@ use kleio::import::wikidata::{
     DEFAULT_KLEIO_ARCHIVE_PATH, DEFAULT_LABEL_SEEDS_PATH, DEFAULT_MAX_FACTS, DEFAULT_MAX_LINES,
     DEFAULT_OUTPUT_PATH, DEFAULT_PROGRESS_EVERY, TruthyImportOptions, WikidataClosureOptions,
     WikidataDraftOptions, WikidataKleioOptions, build_person_drafts, inspect_kleio_archive,
-    run_truthy_closure_import, run_truthy_import, write_kleio_archive_from_drafts,
-    write_label_seeds_from_facts,
+    run_truthy_closure_import, run_truthy_import, summarize_person_drafts,
+    write_kleio_archive_from_drafts, write_label_seeds_from_facts,
 };
 
 fn main() -> ExitCode {
@@ -29,6 +29,9 @@ fn run() -> Result<(), String> {
         (Some("import"), Some("wikidata-closure")) => run_wikidata_closure(args.collect()),
         (Some("import"), Some("wikidata-label-seeds")) => run_wikidata_label_seeds(args.collect()),
         (Some("import"), Some("wikidata-drafts")) => run_wikidata_drafts(args.collect()),
+        (Some("import"), Some("wikidata-drafts-summary")) => {
+            run_wikidata_drafts_summary(args.collect())
+        }
         (Some("import"), Some("wikidata-kleio")) => run_wikidata_kleio(args.collect()),
         (Some("import"), Some("wikidata-kleio-inspect")) => {
             run_wikidata_kleio_inspect(args.collect())
@@ -161,6 +164,24 @@ fn run_wikidata_kleio_inspect(args: Vec<String>) -> Result<(), String> {
         report.families,
         report.places,
         report.notes
+    );
+    Ok(())
+}
+
+fn run_wikidata_drafts_summary(args: Vec<String>) -> Result<(), String> {
+    let (path, limit) = parse_wikidata_drafts_summary_options(args)?;
+    let report = summarize_person_drafts(&path, limit).map_err(|err| {
+        format!(
+            "wikidata-drafts-summary failed for `{}`: {err}",
+            path.display()
+        )
+    })?;
+
+    eprintln!(
+        "kleio: summarized {} (drafts_read={}, humans={})",
+        report.input_path.display(),
+        report.drafts_read,
+        report.humans
     );
     Ok(())
 }
@@ -340,6 +361,33 @@ fn parse_wikidata_kleio_inspect_options(args: Vec<String>) -> Result<PathBuf, St
     Ok(path)
 }
 
+fn parse_wikidata_drafts_summary_options(args: Vec<String>) -> Result<(PathBuf, usize), String> {
+    let mut path = PathBuf::from(DEFAULT_DRAFT_OUTPUT_PATH);
+    let mut limit = 5_usize;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--input-path" => {
+                path = PathBuf::from(next_value(&mut iter, "--input-path")?);
+            }
+            "--limit" => {
+                let value = next_value(&mut iter, "--limit")?;
+                limit = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid integer for `--limit`: `{value}`"))?;
+            }
+            "--help" | "-h" => {
+                print_wikidata_drafts_summary_help();
+                return Err("help requested".to_string());
+            }
+            unknown => return Err(format!("unknown wikidata-drafts-summary flag `{unknown}`")),
+        }
+    }
+
+    Ok((path, limit))
+}
+
 fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     iter.next()
         .ok_or_else(|| format!("missing value for `{flag}`"))
@@ -368,7 +416,7 @@ fn normalize_qid(value: &str) -> Result<String, String> {
 
 fn print_help() {
     println!(
-        "kleio\n\nUSAGE:\n    kleio import wikidata-truthy [OPTIONS]\n    kleio import wikidata-closure [OPTIONS]\n    kleio import wikidata-label-seeds [OPTIONS]\n    kleio import wikidata-drafts [OPTIONS]\n    kleio import wikidata-kleio [OPTIONS]\n    kleio import wikidata-kleio-inspect [OPTIONS]\n\nRun `kleio import <command> --help` for importer options."
+        "kleio\n\nUSAGE:\n    kleio import wikidata-truthy [OPTIONS]\n    kleio import wikidata-closure [OPTIONS]\n    kleio import wikidata-label-seeds [OPTIONS]\n    kleio import wikidata-drafts [OPTIONS]\n    kleio import wikidata-drafts-summary [OPTIONS]\n    kleio import wikidata-kleio [OPTIONS]\n    kleio import wikidata-kleio-inspect [OPTIONS]\n\nRun `kleio import <command> --help` for importer options."
     );
 }
 
@@ -409,6 +457,16 @@ Convert experimental Wikidata person draft NDJSON into a small Kleio GenealogyAr
 USAGE:\n    kleio import wikidata-kleio [OPTIONS]\n\n\
 OPTIONS:\n    --input-path <PATH>       Draft NDJSON input path [default: {DEFAULT_DRAFT_OUTPUT_PATH}]\n    --output-path <PATH>      Kleio rkyv output path [default: {DEFAULT_KLEIO_ARCHIVE_PATH}]\n    --include-non-humans      Include drafts without P31=Q5\n\n\
 EXAMPLES:\n    cargo run -p kleio -- import wikidata-kleio --input-path target/wikidata-person-drafts.ndjson\n"
+    );
+}
+
+fn print_wikidata_drafts_summary_help() {
+    println!(
+        "kleio import wikidata-drafts-summary\n\n\
+Summarize experimental Wikidata person draft NDJSON so you can quickly judge completeness/usefulness.\n\n\
+USAGE:\n    kleio import wikidata-drafts-summary [OPTIONS]\n\n\
+OPTIONS:\n    --input-path <PATH>       Draft NDJSON input path [default: {DEFAULT_DRAFT_OUTPUT_PATH}]\n    --limit <N>               Number of example drafts to print [default: 5]\n\n\
+EXAMPLES:\n    cargo run -p kleio -- import wikidata-drafts-summary --input-path target/wikidata-person-drafts.ndjson\n"
     );
 }
 
