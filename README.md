@@ -42,6 +42,73 @@ The core approach in `kleio` is:
 - keep uncommon or source-specific concepts as `EventKind::Other(String)`
 - attach extra source-specific metadata as generic `Provenance` (attributes/tags/citations)
 
+## Experimental Wikidata truthy import
+
+`kleio` includes a small experimental ETL command for sampling a bounded slice of
+Wikidata's truthy N-Triples dump into a compact newline-delimited JSON
+intermediate format. It streams directly from `vendor/latest-truthy.nt.bz2`; do
+not decompress the full dump to disk.
+
+The importer currently keeps only a small whitelist of person/genealogy-adjacent
+properties (`P31`, `P569`, `P570`, `P19`, `P20`, `P22`, `P25`, `P26`, `P40`,
+`P3373`, `P735`, `P734`, `P106`, `P21`, `P27`, `P625`). Human detection is based
+on `P31 = Q5`, but facts are written as an intermediate source model rather than
+being merged directly into Kleio's permanent genealogy structs.
+
+Safe defaults are bounded (`--max-lines 100000`, `--max-facts 10000`) and write
+to `target/wikidata-sample.ndjson`.
+
+Examples:
+
+- Import the first 1 million decompressed lines:
+
+  `cargo run -p kleio -- import wikidata-truthy --dump-path vendor/latest-truthy.nt.bz2 --max-lines 1000000 --progress-every 100000`
+
+- Stop after 10,000 relevant facts:
+
+  `cargo run -p kleio -- import wikidata-truthy --max-facts 10000`
+
+- Sample facts for one subject while scanning a bounded prefix of the dump:
+
+  `cargo run -p kleio -- import wikidata-truthy --subject Q42 --max-lines 5000000`
+
+  If you are sampling one subject from the subject-grouped truthy dump, you can
+  usually stop as soon as the first later relevant subject is seen:
+
+  `cargo run -p kleio -- import wikidata-truthy --subject Q42 --stop-after-subject --max-lines 5000000`
+
+- Build a one-hop closure from a sampled fact set. This re-streams the dump and
+  imports relevant facts whose subjects are either original subjects or QID
+  entity values referenced by the seed file:
+
+  `cargo run -p kleio -- import wikidata-closure --seed-path target/wikidata-sample.ndjson --max-lines 1000000`
+
+- Generate a sorted QID seed list for building a small external label cache:
+
+  `cargo run -p kleio -- import wikidata-label-seeds --input-path target/wikidata-closure.ndjson`
+
+  Draft generation can then apply an optional JSON label cache shaped like
+  `{ "Q42": "Douglas Adams", "Q350": "Cambridge" }`:
+
+  `cargo run -p kleio -- import wikidata-drafts --input-path target/wikidata-closure.ndjson --label-cache target/wikidata-labels.json`
+
+- Build experimental Kleio-oriented person drafts from sampled facts:
+
+  `cargo run -p kleio -- import wikidata-drafts --input-path target/wikidata-sample.ndjson`
+
+- Convert draft NDJSON into a tiny experimental Kleio `.rkyv` archive:
+
+  `cargo run -p kleio -- import wikidata-kleio --input-path target/wikidata-person-drafts.ndjson`
+
+  This prototype projection creates people, birth/death/occupation events,
+  minimal parent/spouse families when the related person is present in the same
+  draft set, and places for birth/death place QIDs. It preserves Wikidata QIDs in
+  provenance rather than treating the result as authoritative genealogy data.
+
+- Inspect/validate the generated archive:
+
+  `cargo run -p kleio -- import wikidata-kleio-inspect --path target/wikidata-kleio.rkyv`
+
 ## GEDCOM 7 (planned)
 
 A future `kleio_gedcom7` (or similar) crate can:

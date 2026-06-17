@@ -11,6 +11,7 @@
 
 pub mod archive;
 pub mod attribution;
+pub mod import;
 pub mod model;
 pub mod store;
 
