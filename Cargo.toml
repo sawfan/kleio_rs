@@ -2,6 +2,11 @@
 name = "kleio"
 version = "0.1.0"
 edition = "2024"
+exclude = [
+    "vendor/",
+    "*.nt",
+    "*.nt.bz2",
+]
 
 [lib]
 path = "src/lib.rs"
