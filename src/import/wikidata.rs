@@ -19,6 +19,7 @@ use crate::model::{
     DateValue, Event, EventId, EventKind, Family, FamilyId, GenealogyIndex, Name, Note, Person,
     PersonId, Place, PlaceId, Sex,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use crate::store::GenealogyStore;
 
 const WIKIDATA_ENTITY_PREFIX: &str = "http://www.wikidata.org/entity/";
@@ -412,6 +413,7 @@ pub fn write_kleio_archive_from_drafts(
     Ok(report)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn inspect_kleio_archive(path: &Path) -> io::Result<WikidataKleioInspectReport> {
     let store = GenealogyStore::from_file(path).map_err(io::Error::other)?;
     let archived = store.archived().map_err(io::Error::other)?;

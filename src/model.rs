@@ -107,7 +107,19 @@ pub enum Sex {
 /// itself. Keeping that precision in the core model prevents lossy conversions
 /// such as treating a year-only value as January 1st of that year.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub enum DatePrecision {
@@ -172,7 +184,19 @@ impl DatePrecision {
 /// Wikidata commonly uses Gregorian (`Q1985727`) or Julian (`Q1985786`) calendar
 /// models. Other model URIs are preserved losslessly.
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Archive, Serialize, Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum CalendarModel {
     #[default]
@@ -211,7 +235,17 @@ impl CalendarModel {
 /// This is intentionally not a `chrono`/`jiff` concrete date. A value like
 /// "1983" or "1800s" is a precise assertion at year/century precision, not a
 /// full day that should be coerced to `1983-01-01` or `1800-01-01`.
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct HistoricalDate {
     pub year: i32,
     pub month: Option<u8>,
