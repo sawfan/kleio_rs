@@ -1,4 +1,7 @@
-use rkyv::{api::high::to_bytes, rancor::Error};
+use rkyv::{
+    api::high::{from_bytes, to_bytes},
+    rancor::Error,
+};
 
 use crate::model::GenealogyArchive;
 
@@ -10,6 +13,11 @@ use std::path::Path;
 /// This is designed for fast load times in local apps (including WASM).
 pub fn archive_genealogy_archive(archive: &GenealogyArchive) -> Result<Vec<u8>, Error> {
     Ok(to_bytes::<Error>(archive)?.into_vec())
+}
+
+/// Deserialize and validate a `GenealogyArchive` from bytes.
+pub fn deserialize_genealogy_archive(bytes: &[u8]) -> Result<GenealogyArchive, Error> {
+    from_bytes::<GenealogyArchive, Error>(bytes)
 }
 
 /// Validate and view an archived `GenealogyArchive` from bytes.

@@ -761,6 +761,18 @@ impl SearchIndex {
 }
 
 impl GenealogyIndex {
+    /// Rebuild a runtime index from an archived snapshot.
+    #[must_use]
+    pub fn from_archive(archive: GenealogyArchive) -> Self {
+        Self::build(
+            archive.people,
+            archive.events,
+            archive.families,
+            archive.places,
+            archive.notes,
+        )
+    }
+
     /// Build derived indexes. Assumes IDs are unique.
     pub fn build(
         people: Vec<Person>,

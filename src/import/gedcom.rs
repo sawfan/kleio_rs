@@ -64,8 +64,15 @@ pub struct GedcomImportSummary {
 
 impl GedcomImportSummary {
     #[must_use]
-    pub fn from_source_and_index(
-        source: &ged_io::types::GedcomData,
+    pub fn from_index(index: &GenealogyIndex) -> Self {
+        Self::from_source_counts_and_index(0, 0, 0, index)
+    }
+
+    #[must_use]
+    fn from_source_counts_and_index(
+        source_individuals: usize,
+        source_families: usize,
+        source_attributes: usize,
         index: &GenealogyIndex,
     ) -> Self {
         let mut events_with_dates = 0;
@@ -85,13 +92,9 @@ impl GedcomImportSummary {
         }
 
         Self {
-            source_individuals: source.individuals.len(),
-            source_families: source.families.len(),
-            source_attributes: source
-                .individuals
-                .iter()
-                .map(|indi| indi.attributes.len())
-                .sum(),
+            source_individuals,
+            source_families,
+            source_attributes,
             people: index.people.len(),
             families: index.families.len(),
             events: index.events.len(),
@@ -101,6 +104,23 @@ impl GedcomImportSummary {
             earliest_year,
             latest_year,
         }
+    }
+
+    #[must_use]
+    pub fn from_source_and_index(
+        source: &ged_io::types::GedcomData,
+        index: &GenealogyIndex,
+    ) -> Self {
+        Self::from_source_counts_and_index(
+            source.individuals.len(),
+            source.families.len(),
+            source
+                .individuals
+                .iter()
+                .map(|indi| indi.attributes.len())
+                .sum(),
+            index,
+        )
     }
 }
 
@@ -746,6 +766,27 @@ mod tests {
                 .iter()
                 .any(|note| note.text.contains("Analytical engine pioneer"))
         );
+    }
+
+    #[test]
+    fn archive_round_trip_rebuilds_runtime_index() {
+        let result = import_gedcom_text(SAMPLE).expect("sample GEDCOM imports");
+        let bytes = crate::archive_genealogy_archive(&result.index.to_archive())
+            .expect("archive serializes");
+        let archive = crate::deserialize_genealogy_archive(&bytes).expect("archive deserializes");
+        let rebuilt = GenealogyIndex::from_archive(archive);
+
+        assert_eq!(rebuilt.people.len(), result.index.people.len());
+        assert_eq!(rebuilt.families.len(), result.index.families.len());
+        assert_eq!(rebuilt.events.len(), result.index.events.len());
+        assert!(rebuilt.person_by_id.contains_key(&PersonId(1)));
+        assert_eq!(rebuilt.relations[&PersonId(1)].children, vec![PersonId(3)]);
+
+        let summary = GedcomImportSummary::from_index(&rebuilt);
+        assert_eq!(summary.people, 3);
+        assert_eq!(summary.source_individuals, 0);
+        assert_eq!(summary.events_with_dates, 3);
+        assert_eq!(summary.earliest_year, Some(1815));
     }
 
     #[test]
