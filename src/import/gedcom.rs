@@ -796,11 +796,11 @@ fn extract_years(value: &str) -> Vec<i32> {
 
     while idx < bytes.len() {
         let sign = match bytes[idx] {
-            b'-' => {
+            b'-' if is_year_sign(bytes, idx) => {
                 idx += 1;
                 -1
             }
-            b'+' => {
+            b'+' if is_year_sign(bytes, idx) => {
                 idx += 1;
                 1
             }
@@ -824,6 +824,21 @@ fn extract_years(value: &str) -> Vec<i32> {
     }
 
     years
+}
+
+fn is_year_sign(bytes: &[u8], idx: usize) -> bool {
+    bytes
+        .get(idx + 1..idx + 5)
+        .is_some_and(|digits| digits.iter().all(u8::is_ascii_digit))
+        && previous_non_whitespace(bytes, idx).is_none_or(|previous| !previous.is_ascii_digit())
+}
+
+fn previous_non_whitespace(bytes: &[u8], idx: usize) -> Option<u8> {
+    bytes[..idx]
+        .iter()
+        .rev()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
 }
 
 fn map_attribute_kind(
@@ -1051,6 +1066,20 @@ mod tests {
                 .as_ref()
                 .map(|range| (range.earliest_year, range.latest_year)),
             Some((Some(2016), Some(2020)))
+        );
+        let tagged_compact = parse_gedcom_date_range("ABT 1920-1935");
+        assert_eq!(
+            tagged_compact
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1920), Some(1935)))
+        );
+        let spaced_compact = parse_gedcom_date_range("ABT 1920 -1935");
+        assert_eq!(
+            spaced_compact
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1920), Some(1935)))
         );
     }
 
