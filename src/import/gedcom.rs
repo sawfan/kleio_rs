@@ -9,8 +9,9 @@ use ged_io::{GedcomBuilder, GedcomWriter};
 
 use crate::attribution::{Attribute, Provenance, SourceRef, Tag};
 use crate::model::{
-    DateRange, DateValue, Event, EventId, EventKind, Family, FamilyId, GenealogyIndex, Name,
-    Note as KleioNote, NoteId, Person, PersonId, Place, PlaceId, Sex,
+    CalendarModel, DatePrecision, DateRange, DateValue, Event, EventId, EventKind, Family,
+    FamilyId, GenealogyIndex, HistoricalDate, Name, Note as KleioNote, NoteId, Person, PersonId,
+    Place, PlaceId, Sex,
 };
 
 /// Parse GEDCOM text with `ged_io`.
@@ -600,16 +601,116 @@ fn map_event_kind(event: &ged_io::types::event::Event, event_type: Option<&str>)
 
 fn date_value_from_gedcom_date(original: String, provenance: Provenance) -> DateValue {
     let range = parse_gedcom_date_range(&original);
+    let historical = parse_single_gedcom_historical_date(&original);
     DateValue {
         original,
-        historical: None,
+        historical,
         range,
         provenance,
     }
 }
 
+fn parse_single_gedcom_historical_date(value: &str) -> Option<HistoricalDate> {
+    let calendar = gedcom_calendar_model(value);
+    let normalized = normalize_gedcom_date(value);
+    let mut tokens = normalized.split_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    if matches!(
+        tokens.first().copied(),
+        Some("ABT" | "ABOUT" | "CAL" | "CALCULATED" | "EST" | "ESTIMATED")
+    ) {
+        tokens.remove(0);
+    }
+
+    if tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "BET" | "AND" | "FROM" | "TO" | "BEF" | "BEFORE" | "AFT" | "AFTER"
+        )
+    }) {
+        return None;
+    }
+
+    parse_gedcom_date_tokens(&tokens, calendar)
+}
+
+fn parse_gedcom_date_tokens(tokens: &[&str], calendar: CalendarModel) -> Option<HistoricalDate> {
+    match tokens {
+        [year] => {
+            parse_year(year).map(|year| HistoricalDate::new(year, DatePrecision::Year, calendar))
+        }
+        [month, year] => {
+            let month = parse_gedcom_month(month)?;
+            let year = parse_year(year)?;
+            let mut date = HistoricalDate::new(year, DatePrecision::Month, calendar);
+            date.month = Some(month);
+            Some(date)
+        }
+        [day, month, year] => {
+            let day = parse_day(day)?;
+            let month = parse_gedcom_month(month)?;
+            let year = parse_year(year)?;
+            let mut date = HistoricalDate::new(year, DatePrecision::Day, calendar);
+            date.month = Some(month);
+            date.day = Some(day);
+            Some(date)
+        }
+        _ => None,
+    }
+}
+
+fn gedcom_calendar_model(value: &str) -> CalendarModel {
+    let upper = value.to_ascii_uppercase();
+    if upper.contains("@#DJULIAN@") {
+        CalendarModel::Julian
+    } else {
+        CalendarModel::Gregorian
+    }
+}
+
+fn parse_year(value: &str) -> Option<i32> {
+    let value = value.trim();
+    if value.len() > 4 || value.is_empty() {
+        return None;
+    }
+    value.parse::<i32>().ok()
+}
+
+fn parse_day(value: &str) -> Option<u8> {
+    let day = value.parse::<u8>().ok()?;
+    (1..=31).contains(&day).then_some(day)
+}
+
+fn parse_gedcom_month(value: &str) -> Option<u8> {
+    match value.to_ascii_uppercase().as_str() {
+        "JAN" => Some(1),
+        "FEB" => Some(2),
+        "MAR" => Some(3),
+        "APR" => Some(4),
+        "MAY" => Some(5),
+        "JUN" => Some(6),
+        "JUL" => Some(7),
+        "AUG" => Some(8),
+        "SEP" => Some(9),
+        "OCT" => Some(10),
+        "NOV" => Some(11),
+        "DEC" => Some(12),
+        _ => None,
+    }
+}
+
 fn parse_gedcom_date_range(value: &str) -> Option<DateRange> {
     let normalized = normalize_gedcom_date(value);
+    let upper = normalized.to_ascii_uppercase();
+    let tokens = upper.split_whitespace().collect::<Vec<_>>();
+
+    if let Some(range) = parse_explicit_gedcom_date_range(&tokens) {
+        return Some(range);
+    }
+
     let years = extract_years(&normalized);
     if years.is_empty() {
         return None;
@@ -617,10 +718,65 @@ fn parse_gedcom_date_range(value: &str) -> Option<DateRange> {
 
     let earliest = years.iter().copied().min();
     let latest = years.iter().copied().max();
-    Some(DateRange {
-        earliest_year: earliest,
-        latest_year: latest,
-    })
+    Some(DateRange::from_years(earliest, latest))
+}
+
+fn parse_explicit_gedcom_date_range(tokens: &[&str]) -> Option<DateRange> {
+    match tokens {
+        ["BEF" | "BEFORE", rest @ ..] => {
+            Some(DateRange::from_bounds(None, parse_gedcom_date_bound(rest)))
+        }
+        ["AFT" | "AFTER", rest @ ..] => {
+            Some(DateRange::from_bounds(parse_gedcom_date_bound(rest), None))
+        }
+        ["FROM", rest @ ..] => {
+            let split = rest.iter().position(|token| *token == "TO");
+            match split {
+                Some(idx) => Some(DateRange::from_bounds(
+                    parse_gedcom_date_bound(&rest[..idx]),
+                    parse_gedcom_date_bound(&rest[idx + 1..]),
+                )),
+                None => Some(DateRange::from_bounds(parse_gedcom_date_bound(rest), None)),
+            }
+        }
+        ["TO", rest @ ..] => Some(DateRange::from_bounds(None, parse_gedcom_date_bound(rest))),
+        ["BET" | "BETWEEN", rest @ ..] => {
+            let idx = rest.iter().position(|token| *token == "AND")?;
+            Some(DateRange::from_bounds(
+                parse_gedcom_date_bound(&rest[..idx]),
+                parse_gedcom_date_bound(&rest[idx + 1..]),
+            ))
+        }
+        [range] => parse_year_range_token(range).map(|(start, end)| {
+            DateRange::from_bounds(
+                Some(HistoricalDate::new(
+                    start,
+                    DatePrecision::Year,
+                    CalendarModel::Gregorian,
+                )),
+                Some(HistoricalDate::new(
+                    end,
+                    DatePrecision::Year,
+                    CalendarModel::Gregorian,
+                )),
+            )
+        }),
+        _ => None,
+    }
+}
+
+fn parse_gedcom_date_bound(tokens: &[&str]) -> Option<HistoricalDate> {
+    if tokens.is_empty() {
+        return None;
+    }
+    parse_gedcom_date_tokens(tokens, CalendarModel::Gregorian)
+}
+
+fn parse_year_range_token(token: &str) -> Option<(i32, i32)> {
+    let (start, end) = token.split_once('-')?;
+    let start = parse_year(start)?;
+    let end = parse_year(end)?;
+    (start <= end).then_some((start, end))
 }
 
 fn normalize_gedcom_date(value: &str) -> String {
@@ -654,12 +810,13 @@ fn extract_years(value: &str) -> Vec<i32> {
         if idx + 4 <= bytes.len() && bytes[idx..idx + 4].iter().all(u8::is_ascii_digit) {
             let before_ok = idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric();
             let after_ok = idx + 4 == bytes.len() || !bytes[idx + 4].is_ascii_alphanumeric();
-            if before_ok && after_ok {
-                if let Ok(year) = value[idx..idx + 4].parse::<i32>() {
-                    years.push(year * sign);
-                    idx += 4;
-                    continue;
-                }
+            if before_ok
+                && after_ok
+                && let Ok(year) = value[idx..idx + 4].parse::<i32>()
+            {
+                years.push(year * sign);
+                idx += 4;
+                continue;
             }
         }
 
@@ -746,7 +903,15 @@ mod tests {
             .expect("birth imported");
         assert_eq!(
             birth.date.as_ref().map(DateValue::display),
-            Some("10 DEC 1815".to_string())
+            Some("1815-12-10".to_string())
+        );
+        assert_eq!(
+            birth
+                .date
+                .as_ref()
+                .and_then(|date| date.historical.as_ref())
+                .map(|date| date.precision),
+            Some(DatePrecision::Day)
         );
         let occupation = result
             .index
@@ -791,26 +956,139 @@ mod tests {
 
     #[test]
     fn gedcom_date_ranges_parse_common_qualifiers() {
+        let between = parse_gedcom_date_range("BET 1901 AND 1905");
         assert_eq!(
-            parse_gedcom_date_range("BET 1901 AND 1905"),
-            Some(DateRange {
-                earliest_year: Some(1901),
-                latest_year: Some(1905)
-            })
+            between
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1901), Some(1905)))
         );
         assert_eq!(
-            parse_gedcom_date_range("FROM 1842 TO 1843"),
-            Some(DateRange {
-                earliest_year: Some(1842),
-                latest_year: Some(1843)
-            })
+            between
+                .as_ref()
+                .and_then(|range| range.start.as_ref())
+                .map(|date| date.year),
+            Some(1901)
         );
         assert_eq!(
-            parse_gedcom_date_range("ABT 10 DEC 1815"),
-            Some(DateRange {
-                earliest_year: Some(1815),
-                latest_year: Some(1815)
-            })
+            between
+                .as_ref()
+                .and_then(|range| range.end.as_ref())
+                .map(|date| date.year),
+            Some(1905)
+        );
+        let from_to = parse_gedcom_date_range("FROM 1842 TO 1843");
+        assert_eq!(
+            from_to
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1842), Some(1843)))
+        );
+        assert_eq!(
+            from_to
+                .as_ref()
+                .and_then(|range| range.start.as_ref())
+                .map(|date| date.year),
+            Some(1842)
+        );
+        assert_eq!(
+            from_to
+                .as_ref()
+                .and_then(|range| range.end.as_ref())
+                .map(|date| date.year),
+            Some(1843)
+        );
+        let approximate = parse_gedcom_date_range("ABT 10 DEC 1815");
+        assert_eq!(
+            approximate
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1815), Some(1815)))
+        );
+        let before = parse_gedcom_date_range("BEF 1900");
+        assert_eq!(
+            before
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((None, Some(1900)))
+        );
+        assert!(
+            before
+                .as_ref()
+                .and_then(|range| range.start.as_ref())
+                .is_none()
+        );
+        assert_eq!(
+            before
+                .as_ref()
+                .and_then(|range| range.end.as_ref())
+                .map(|date| date.year),
+            Some(1900)
+        );
+        let after = parse_gedcom_date_range("AFT 1900");
+        assert_eq!(
+            after
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(1900), None))
+        );
+        assert_eq!(
+            after
+                .as_ref()
+                .and_then(|range| range.start.as_ref())
+                .map(|date| date.year),
+            Some(1900)
+        );
+        assert!(
+            after
+                .as_ref()
+                .and_then(|range| range.end.as_ref())
+                .is_none()
+        );
+        let compact = parse_gedcom_date_range("2016-2020");
+        assert_eq!(
+            compact
+                .as_ref()
+                .map(|range| (range.earliest_year, range.latest_year)),
+            Some((Some(2016), Some(2020)))
+        );
+    }
+
+    #[test]
+    fn gedcom_single_dates_parse_with_precision() {
+        let day = date_value_from_gedcom_date("10 DEC 1815".to_string(), Provenance::default());
+        let month = date_value_from_gedcom_date("DEC 1815".to_string(), Provenance::default());
+        let year = date_value_from_gedcom_date("1815".to_string(), Provenance::default());
+        let approximate =
+            date_value_from_gedcom_date("ABT DEC 1815".to_string(), Provenance::default());
+        let range =
+            date_value_from_gedcom_date("BET 1901 AND 1905".to_string(), Provenance::default());
+
+        let julian = date_value_from_gedcom_date(
+            "@#DJULIAN@ 10 DEC 1815".to_string(),
+            Provenance::default(),
+        );
+
+        assert_eq!(
+            day.historical.as_ref().map(|date| date.precision),
+            Some(DatePrecision::Day)
+        );
+        assert_eq!(
+            month.historical.as_ref().map(|date| date.precision),
+            Some(DatePrecision::Month)
+        );
+        assert_eq!(
+            year.historical.as_ref().map(|date| date.precision),
+            Some(DatePrecision::Year)
+        );
+        assert_eq!(
+            approximate.historical.as_ref().map(|date| date.precision),
+            Some(DatePrecision::Month)
+        );
+        assert!(range.historical.is_none());
+        assert_eq!(
+            julian.historical.as_ref().map(|date| &date.calendar),
+            Some(&CalendarModel::Julian)
         );
     }
 

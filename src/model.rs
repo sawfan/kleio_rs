@@ -404,10 +404,7 @@ impl HistoricalDate {
             | DatePrecision::Second => (self.year, self.year),
         };
 
-        DateRange {
-            earliest_year: Some(earliest_year),
-            latest_year: Some(latest_year),
-        }
+        DateRange::from_years(Some(earliest_year), Some(latest_year))
     }
 
     /// Precision-aware display that never fills missing components with
@@ -508,6 +505,40 @@ pub struct Name {
 pub struct DateRange {
     pub earliest_year: Option<i32>,
     pub latest_year: Option<i32>,
+
+    /// Parsed lower bound when the source provided enough structure to retain
+    /// precision. This may be open-ended (`None`) for values like `BEF 1900`.
+    pub start: Option<HistoricalDate>,
+
+    /// Parsed upper bound when the source provided enough structure to retain
+    /// precision. This may be open-ended (`None`) for values like `AFT 1900`.
+    pub end: Option<HistoricalDate>,
+}
+
+impl DateRange {
+    pub fn from_years(earliest_year: Option<i32>, latest_year: Option<i32>) -> Self {
+        Self {
+            earliest_year,
+            latest_year,
+            start: earliest_year.map(|year| {
+                HistoricalDate::new(year, DatePrecision::Year, CalendarModel::Gregorian)
+            }),
+            end: latest_year.map(|year| {
+                HistoricalDate::new(year, DatePrecision::Year, CalendarModel::Gregorian)
+            }),
+        }
+    }
+
+    pub fn from_bounds(start: Option<HistoricalDate>, end: Option<HistoricalDate>) -> Self {
+        let start_range = start.as_ref().map(HistoricalDate::year_range);
+        let end_range = end.as_ref().map(HistoricalDate::year_range);
+        Self {
+            earliest_year: start_range.as_ref().and_then(|range| range.earliest_year),
+            latest_year: end_range.as_ref().and_then(|range| range.latest_year),
+            start,
+            end,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
@@ -531,10 +562,8 @@ pub struct DateValue {
 impl DateValue {
     pub fn from_original(original: impl Into<String>, provenance: Provenance) -> Self {
         let original = original.into();
-        let range = parse_year_from_genealogy_date(&original).map(|year| DateRange {
-            earliest_year: Some(year),
-            latest_year: Some(year),
-        });
+        let range = parse_year_from_genealogy_date(&original)
+            .map(|year| DateRange::from_years(Some(year), Some(year)));
 
         Self {
             original,
@@ -1038,10 +1067,7 @@ mod tests {
         assert_eq!(date.display(), "1983");
         assert_eq!(
             date.year_range(),
-            DateRange {
-                earliest_year: Some(1983),
-                latest_year: Some(1983)
-            }
+            DateRange::from_years(Some(1983), Some(1983))
         );
     }
 
@@ -1073,10 +1099,7 @@ mod tests {
         assert_eq!(date.display(), "1800s");
         assert_eq!(
             date.year_range(),
-            DateRange {
-                earliest_year: Some(1800),
-                latest_year: Some(1899)
-            }
+            DateRange::from_years(Some(1800), Some(1899))
         );
     }
 }
