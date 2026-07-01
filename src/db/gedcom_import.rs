@@ -1,4 +1,4 @@
-use std::{collections::hash_map::DefaultHasher, fs, hash::Hasher, path::Path};
+use std::{fs, path::Path};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,7 @@ use uuid::Uuid;
 use super::{
     error::DbError,
     project::{project_exists, utc_now_rfc3339},
+    schema::hash_gedcom_sha256,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,9 +16,12 @@ pub struct GedcomImport {
     pub project_id: String,
     pub filename: String,
     pub file_hash: String,
+    pub byte_len: usize,
+    pub line_count: Option<usize>,
     pub imported_at: String,
     pub parser_version: Option<String>,
     pub raw_gedcom: String,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,8 +30,11 @@ pub struct GedcomImportSummary {
     pub project_id: String,
     pub filename: String,
     pub file_hash: String,
+    pub byte_len: usize,
+    pub line_count: Option<usize>,
     pub imported_at: String,
     pub parser_version: Option<String>,
+    pub note: Option<String>,
 }
 
 pub fn import_gedcom_path(
@@ -57,14 +64,19 @@ pub fn import_gedcom_file(
     }
 
     let imported_at = utc_now_rfc3339()?;
+    let byte_len = gedcom_text.len();
+    let line_count = gedcom_text.lines().count();
     let import = GedcomImport {
         id: Uuid::new_v4().to_string(),
         project_id: project_id.to_string(),
         filename: filename.to_string(),
         file_hash: hash_gedcom_text(gedcom_text),
+        byte_len,
+        line_count: Some(line_count),
         imported_at,
         parser_version: None,
         raw_gedcom: gedcom_text.to_string(),
+        note: None,
     };
 
     tx.execute(
@@ -74,19 +86,25 @@ pub fn import_gedcom_file(
             project_id,
             filename,
             file_hash,
+            byte_len,
+            line_count,
             imported_at,
             parser_version,
-            raw_gedcom
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            raw_gedcom,
+            note
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         "#,
         params![
             import.id,
             import.project_id,
             import.filename,
             import.file_hash,
+            import.byte_len as i64,
+            import.line_count.map(|value| value as i64),
             import.imported_at,
             import.parser_version,
             import.raw_gedcom,
+            import.note,
         ],
     )?;
 
@@ -100,7 +118,8 @@ pub fn list_gedcom_imports(
 ) -> Result<Vec<GedcomImportSummary>, DbError> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, project_id, filename, file_hash, imported_at, parser_version
+        SELECT id, project_id, filename, file_hash, byte_len, line_count,
+               imported_at, parser_version, note
         FROM gedcom_import
         WHERE project_id = ?1
         ORDER BY imported_at DESC, id DESC
@@ -113,8 +132,13 @@ pub fn list_gedcom_imports(
             project_id: row.get(1)?,
             filename: row.get(2)?,
             file_hash: row.get(3)?,
-            imported_at: row.get(4)?,
-            parser_version: row.get(5)?,
+            byte_len: row.get::<_, i64>(4)?.max(0) as usize,
+            line_count: row
+                .get::<_, Option<i64>>(5)?
+                .map(|value| value.max(0) as usize),
+            imported_at: row.get(6)?,
+            parser_version: row.get(7)?,
+            note: row.get(8)?,
         })
     })?;
 
@@ -127,7 +151,8 @@ pub fn read_gedcom_import(
 ) -> Result<Option<GedcomImport>, DbError> {
     conn.query_row(
         r#"
-        SELECT id, project_id, filename, file_hash, imported_at, parser_version, raw_gedcom
+        SELECT id, project_id, filename, file_hash, byte_len, line_count,
+               imported_at, parser_version, raw_gedcom, note
         FROM gedcom_import
         WHERE id = ?1
         "#,
@@ -138,9 +163,14 @@ pub fn read_gedcom_import(
                 project_id: row.get(1)?,
                 filename: row.get(2)?,
                 file_hash: row.get(3)?,
-                imported_at: row.get(4)?,
-                parser_version: row.get(5)?,
-                raw_gedcom: row.get(6)?,
+                byte_len: row.get::<_, i64>(4)?.max(0) as usize,
+                line_count: row
+                    .get::<_, Option<i64>>(5)?
+                    .map(|value| value.max(0) as usize),
+                imported_at: row.get(6)?,
+                parser_version: row.get(7)?,
+                raw_gedcom: row.get(8)?,
+                note: row.get(9)?,
             })
         },
     )
@@ -149,9 +179,7 @@ pub fn read_gedcom_import(
 }
 
 pub fn hash_gedcom_text(gedcom_text: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    hasher.write(gedcom_text.as_bytes());
-    format!("siphash64:{:016x}", hasher.finish())
+    hash_gedcom_sha256(gedcom_text)
 }
 
 #[cfg(test)]
@@ -171,10 +199,14 @@ mod tests {
         assert_eq!(import.filename, "family.ged");
         assert_eq!(import.raw_gedcom, raw);
         assert_eq!(import.file_hash, hash_gedcom_text(raw));
+        assert_eq!(import.byte_len, raw.len());
+        assert_eq!(import.line_count, Some(raw.lines().count()));
 
         let summaries = list_gedcom_imports(&conn, &project.id).expect("list imports");
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, import.id);
+        assert_eq!(summaries[0].byte_len, raw.len());
+        assert_eq!(summaries[0].line_count, Some(raw.lines().count()));
 
         let read = read_gedcom_import(&conn, &import.id)
             .expect("read import")

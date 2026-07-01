@@ -6,6 +6,9 @@ Current scope:
 
 - `project` stores project identity and timestamps.
 - `gedcom_import` stores raw GEDCOM uploads as immutable datasource rows.
+- GEDCOM import summaries store byte length, optional line count, and optional notes so lists do not need to read full raw text.
+- `project_document` stores the current Ourania `GenealogyDocument` JSON for a project.
+- `place_resolution` stores remembered geocoding decisions/candidates keyed by project and stable place key.
 - GEDCOM text is preserved exactly as imported.
 - No parsing is performed during insertion yet.
 
