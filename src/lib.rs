@@ -11,6 +11,8 @@
 
 pub mod archive;
 pub mod attribution;
+#[cfg(feature = "sqlite")]
+pub mod db;
 pub mod import;
 pub mod model;
 pub mod store;
