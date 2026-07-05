@@ -16,8 +16,10 @@ pub mod db;
 pub mod import;
 pub mod model;
 pub mod store;
+pub mod tree;
 
 pub use archive::*;
 pub use attribution::*;
 pub use model::*;
 pub use store::*;
+pub use tree::*;

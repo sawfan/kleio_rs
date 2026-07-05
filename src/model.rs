@@ -21,6 +21,8 @@ use crate::attribution::Provenance;
     Archive,
     Serialize,
     Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub struct PersonId(pub u64);
@@ -38,6 +40,8 @@ pub struct PersonId(pub u64);
     Archive,
     Serialize,
     Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub struct EventId(pub u64);
@@ -55,6 +59,8 @@ pub struct EventId(pub u64);
     Archive,
     Serialize,
     Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub struct FamilyId(pub u64);
@@ -72,6 +78,8 @@ pub struct FamilyId(pub u64);
     Archive,
     Serialize,
     Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub struct PlaceId(pub u64);
@@ -89,11 +97,23 @@ pub struct PlaceId(pub u64);
     Archive,
     Serialize,
     Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub struct NoteId(pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum Sex {
     Male,
     Female,
@@ -488,7 +508,17 @@ fn format_year(year: i32) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Name {
     pub display: String,
     pub given: Option<String>,
@@ -501,7 +531,18 @@ pub struct Name {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize, Default)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+    Default,
+)]
 pub struct DateRange {
     pub earliest_year: Option<i32>,
     pub latest_year: Option<i32>,
@@ -541,7 +582,17 @@ impl DateRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct DateValue {
     pub original: String,
 
@@ -606,7 +657,17 @@ impl DateValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum EventKind {
     Birth,
     Death,
@@ -620,7 +681,17 @@ pub enum EventKind {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Event {
     pub id: EventId,
     pub kind: EventKind,
@@ -642,7 +713,17 @@ pub struct Event {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Family {
     pub id: FamilyId,
     pub spouses: Vec<PersonId>,
@@ -652,7 +733,9 @@ pub struct Family {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Archive, Serialize, Deserialize, serde::Serialize, serde::Deserialize,
+)]
 pub struct Place {
     pub id: PlaceId,
     pub name: String,
@@ -665,7 +748,17 @@ pub struct Place {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Note {
     pub id: NoteId,
     pub text: String,
@@ -674,7 +767,17 @@ pub struct Note {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Person {
     pub id: PersonId,
     pub names: Vec<Name>,

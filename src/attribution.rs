@@ -15,7 +15,20 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// - `gedcom7:I42`
 /// - `wikidata:Q123`
 /// - `local:person:7`
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct SourceRef(pub String);
 
 /// A simple namespaced tag.
@@ -23,14 +36,37 @@ pub struct SourceRef(pub String);
 /// Examples:
 /// - `user:tag:NeedsReview`
 /// - `import:category:Artists`
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Tag(pub String);
 
 /// A generic key/value attribute.
 ///
 /// This is meant for lossless import of miscellaneous fields when the core
 /// schema does not (yet) have first-class fields.
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Attribute {
     pub key: String,
     pub value: String,
@@ -39,7 +75,17 @@ pub struct Attribute {
 /// A citation / evidence pointer.
 ///
 /// This is intentionally minimal and can be expanded later.
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Citation {
     pub source: SourceRef,
     pub detail: Option<String>,
@@ -48,7 +94,18 @@ pub struct Citation {
 }
 
 /// Provenance attached to an entity or assertion.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Provenance {
     pub sources: Vec<SourceRef>,
     pub citations: Vec<Citation>,
