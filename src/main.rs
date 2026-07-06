@@ -1,4 +1,7 @@
-use std::{env, fs, process::ExitCode};
+use std::process::ExitCode;
+
+#[cfg(feature = "sqlite")]
+use std::{env, fs};
 
 #[cfg(feature = "sqlite")]
 fn main() -> ExitCode {

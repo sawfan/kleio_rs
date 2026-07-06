@@ -337,6 +337,20 @@ pub fn genealogy_domain_profile() -> DomainProfile {
                 ],
                 Some("{subject} worked as {title}"),
             ),
+            event_type(
+                &domain,
+                "life",
+                "Life / existence",
+                Some(
+                    "A scale-relative composite interval representing a person's life/existence between boundary events.",
+                ),
+                &["subject"],
+                vec![
+                    role_count("subject", 1, Some(1)),
+                    EventConstraint::TimeRecommended,
+                ],
+                Some("{subject} lived"),
+            ),
         ],
     }
 }

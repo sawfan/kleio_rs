@@ -4,9 +4,8 @@
 //! GEDCOM/Wikidata-derived `model::Event` values without forcing an immediate
 //! rewrite of the genealogy archive format.
 
-use crate::entity::EntityRef;
 use crate::event::{EventParticipant, TimeSpec, TimelineEvent};
-use crate::event_type::{EventTypeId, genealogy_domain_profile};
+use crate::event_type::EventTypeId;
 use crate::model::{Event, EventKind, PersonId};
 
 pub const GENEALOGY_BIRTH_TYPE: &str = "genealogy.birth";
@@ -60,6 +59,23 @@ pub fn genealogy_event_label(kind: &EventKind) -> String {
     }
 }
 
+pub fn genealogy_event_scale_kinds(kind: &EventKind) -> Vec<crate::EventScaleKind> {
+    match kind {
+        EventKind::Birth | EventKind::Death => {
+            vec![
+                crate::EventScaleKind::Atomic,
+                crate::EventScaleKind::Boundary,
+            ]
+        }
+        EventKind::Marriage
+        | EventKind::Baptism
+        | EventKind::Burial
+        | EventKind::Residence
+        | EventKind::Occupation
+        | EventKind::Other(_) => vec![crate::EventScaleKind::Atomic],
+    }
+}
+
 pub fn timeline_event_from_genealogy_event(event: &Event) -> TimelineEvent {
     let mut timeline_event = TimelineEvent::new(
         event.id,
@@ -75,6 +91,7 @@ pub fn timeline_event_from_genealogy_event(event: &Event) -> TimelineEvent {
         .clone()
         .map(TimeSpec::from_date_value)
         .unwrap_or(TimeSpec::Unknown);
+    timeline_event.scale_kinds = genealogy_event_scale_kinds(&event.kind);
     timeline_event.place = event.place;
     timeline_event.description = event.description.clone();
     timeline_event.provenance = event.provenance.clone();
@@ -112,17 +129,10 @@ pub fn timeline_events_for_person<'a>(
         .collect()
 }
 
-pub fn timeline_event_has_entity(event: &TimelineEvent, entity: &EntityRef) -> bool {
-    event
-        .participants
-        .iter()
-        .any(|participant| &participant.entity == entity)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DateValue, EventId, Provenance};
+    use crate::{DateValue, EntityRef, EventId, Provenance, genealogy_domain_profile};
 
     #[test]
     fn birth_event_maps_to_genealogy_birth_type_and_child_role() {
@@ -143,6 +153,8 @@ mod tests {
         assert_eq!(timeline_event.type_ref.as_str(), GENEALOGY_BIRTH_TYPE);
         assert_eq!(timeline_event.title, "Birth");
         assert_eq!(timeline_event.time.display(), "1901");
+        assert!(timeline_event.is_scale_kind(crate::EventScaleKind::Atomic));
+        assert!(timeline_event.is_scale_kind(crate::EventScaleKind::Boundary));
         assert_eq!(timeline_event.participants.len(), 1);
         assert_eq!(timeline_event.participants[0].role.as_str(), ROLE_CHILD);
         assert_eq!(

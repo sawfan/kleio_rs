@@ -6,11 +6,13 @@
 //! profiles alongside entities/events so project-local vocabularies remain
 //! portable.
 
+use std::collections::BTreeSet;
+
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::attribution::{Provenance, SourceRef, Tag};
 use crate::entity::{Entity, EntityRef};
-use crate::event::TimelineEvent;
+use crate::event::{EventRelation, TimelineEvent};
 use crate::event_query::{TimelineEventFilter, YearSpan, filter_timeline_events};
 use crate::event_type::{DomainProfile, EventTypeId};
 
@@ -53,6 +55,7 @@ impl PackId {
 )]
 pub enum PackKind {
     UserJournal,
+    Biography,
     Genealogy,
     HistoricalTimeline,
     ResearchLog,
@@ -138,6 +141,7 @@ pub struct EventPack {
     pub domain_profiles: Vec<DomainProfile>,
     pub entities: Vec<Entity>,
     pub events: Vec<TimelineEvent>,
+    pub event_relations: Vec<EventRelation>,
     pub sources: Vec<SourceRecord>,
     pub tags: Vec<Tag>,
     pub provenance: Provenance,
@@ -151,6 +155,7 @@ impl EventPack {
             domain_profiles: Vec::new(),
             entities: Vec::new(),
             events: Vec::new(),
+            event_relations: Vec::new(),
             sources: Vec::new(),
             tags: Vec::new(),
             provenance: Provenance::default(),
@@ -174,6 +179,20 @@ impl EventPack {
     pub fn events_in_year_span(&self, years: YearSpan) -> Vec<&TimelineEvent> {
         let filter = TimelineEventFilter::new().with_year_span(years);
         filter_timeline_events(&self.events, &filter)
+    }
+
+    pub fn child_event_relations(&self, parent_event_id: crate::EventId) -> Vec<&EventRelation> {
+        self.event_relations
+            .iter()
+            .filter(|relation| relation.parent_event_id == parent_event_id)
+            .collect()
+    }
+
+    pub fn parent_event_relations(&self, child_event_id: crate::EventId) -> Vec<&EventRelation> {
+        self.event_relations
+            .iter()
+            .filter(|relation| relation.child_event_id == child_event_id)
+            .collect()
     }
 }
 
@@ -205,9 +224,91 @@ impl TimelineDocument {
         })
     }
 
+    pub fn pack(&self, pack_id: &PackId) -> Option<&EventPack> {
+        self.packs.iter().find(|pack| &pack.metadata.id == pack_id)
+    }
+
+    pub fn pack_mut(&mut self, pack_id: &PackId) -> Option<&mut EventPack> {
+        self.packs
+            .iter_mut()
+            .find(|pack| &pack.metadata.id == pack_id)
+    }
+
+    pub fn is_pack_active(&self, pack_id: &PackId) -> bool {
+        self.active_pack_ids.iter().any(|id| id == pack_id)
+    }
+
+    pub fn set_pack_active(&mut self, pack_id: &PackId, active: bool) {
+        if active {
+            if self.pack(pack_id).is_some() && !self.is_pack_active(pack_id) {
+                self.active_pack_ids.push(pack_id.clone());
+            }
+        } else {
+            self.active_pack_ids.retain(|id| id != pack_id);
+        }
+    }
+
+    pub fn activate_pack(&mut self, pack_id: &PackId) {
+        self.set_pack_active(pack_id, true);
+    }
+
+    pub fn deactivate_pack(&mut self, pack_id: &PackId) {
+        self.set_pack_active(pack_id, false);
+    }
+
+    pub fn remove_pack(&mut self, pack_id: &PackId) -> Option<EventPack> {
+        let index = self
+            .packs
+            .iter()
+            .position(|pack| &pack.metadata.id == pack_id)?;
+        self.active_pack_ids.retain(|id| id != pack_id);
+        Some(self.packs.remove(index))
+    }
+
     pub fn active_events(&self) -> Vec<&TimelineEvent> {
         self.active_packs()
             .flat_map(|pack| pack.events.iter())
+            .collect()
+    }
+
+    pub fn active_event_relations(&self) -> Vec<&EventRelation> {
+        self.active_packs()
+            .flat_map(|pack| pack.event_relations.iter())
+            .collect()
+    }
+
+    pub fn active_events_filtered(&self, filter: &TimelineEventFilter) -> Vec<&TimelineEvent> {
+        self.active_packs()
+            .flat_map(|pack| filter_timeline_events(&pack.events, filter))
+            .collect()
+    }
+
+    pub fn active_events_for_entity(&self, entity: impl Into<EntityRef>) -> Vec<&TimelineEvent> {
+        let filter = TimelineEventFilter::for_entity(entity);
+        self.active_events_filtered(&filter)
+    }
+
+    pub fn active_events_in_year_span(&self, years: YearSpan) -> Vec<&TimelineEvent> {
+        let filter = TimelineEventFilter::new().with_year_span(years);
+        self.active_events_filtered(&filter)
+    }
+
+    pub fn visible_active_events(
+        &self,
+        collapsed_parent_ids: impl IntoIterator<Item = crate::EventId>,
+    ) -> Vec<&TimelineEvent> {
+        let collapsed_parent_ids: BTreeSet<crate::EventId> =
+            collapsed_parent_ids.into_iter().collect();
+        let hidden_child_ids: BTreeSet<crate::EventId> = self
+            .active_packs()
+            .flat_map(|pack| pack.event_relations.iter())
+            .filter(|relation| collapsed_parent_ids.contains(&relation.parent_event_id))
+            .map(|relation| relation.child_event_id)
+            .collect();
+
+        self.active_packs()
+            .flat_map(|pack| pack.events.iter())
+            .filter(|event| !hidden_child_ids.contains(&event.id))
             .collect()
     }
 
@@ -254,8 +355,15 @@ mod tests {
                 .with_participant(EventParticipant::new(PersonId(7), "deceased")),
         );
 
+        pack.event_relations.push(EventRelation::new(
+            EventId(100),
+            EventId(1),
+            crate::EventRelationKind::Starts,
+        ));
+
         assert_eq!(pack.events_for_entity(PersonId(7)).len(), 2);
         assert_eq!(pack.events_in_year_span(YearSpan::exact(1901)).len(), 1);
+        assert_eq!(pack.child_event_relations(EventId(100)).len(), 1);
     }
 
     #[test]
@@ -290,5 +398,71 @@ mod tests {
         let active_events = document.active_events();
         assert_eq!(active_events.len(), 1);
         assert_eq!(active_events[0].id, EventId(1));
+    }
+
+    #[test]
+    fn timeline_document_toggles_and_removes_packs() {
+        let pack_id = PackId::new("pack:toggle");
+        let pack = EventPack::empty(
+            PackMetadata::new(pack_id.clone(), "Toggle Pack"),
+            PackKind::UserJournal,
+        );
+        let mut document = TimelineDocument::empty();
+
+        document.add_pack(pack, false);
+        assert!(!document.is_pack_active(&pack_id));
+
+        document.activate_pack(&pack_id);
+        assert!(document.is_pack_active(&pack_id));
+
+        document.deactivate_pack(&pack_id);
+        assert!(!document.is_pack_active(&pack_id));
+
+        let removed = document.remove_pack(&pack_id);
+        assert!(removed.is_some());
+        assert!(document.pack(&pack_id).is_none());
+    }
+
+    #[test]
+    fn timeline_document_filters_active_events_and_hides_collapsed_children() {
+        let mut pack = EventPack::empty(
+            PackMetadata::new(PackId::new("pack:bio"), "Biography"),
+            PackKind::Biography,
+        );
+        pack.events.push(TimelineEvent::new(
+            EventId(100),
+            EventTypeId::new("genealogy.life"),
+            "Life",
+        ));
+        pack.events.push(
+            TimelineEvent::new(EventId(1), EventTypeId::new("genealogy.birth"), "Birth")
+                .with_time(TimeSpec::from_date_value(DateValue::from_original(
+                    "1901",
+                    Provenance::default(),
+                )))
+                .with_participant(EventParticipant::new(PersonId(7), "child")),
+        );
+        pack.event_relations.push(EventRelation::new(
+            EventId(100),
+            EventId(1),
+            crate::EventRelationKind::Starts,
+        ));
+        let mut document = TimelineDocument::empty();
+        document.add_pack(pack, true);
+
+        assert_eq!(document.active_events_for_entity(PersonId(7)).len(), 1);
+        assert_eq!(
+            document
+                .active_events_in_year_span(YearSpan::exact(1901))
+                .len(),
+            1
+        );
+
+        let visible_ids: Vec<EventId> = document
+            .visible_active_events([EventId(100)])
+            .into_iter()
+            .map(|event| event.id)
+            .collect();
+        assert_eq!(visible_ids, vec![EventId(100)]);
     }
 }
