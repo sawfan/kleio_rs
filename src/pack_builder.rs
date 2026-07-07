@@ -8,9 +8,14 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::attribution::{Provenance, SourceRef, Tag};
 use crate::entity::Entity;
-use crate::event::{EventParticipant, EventRelation, EventScaleKind, TimeSpec, TimelineEvent};
+use crate::event::{
+    EventCompositionKind, EventParticipant, EventRelation, EventScaleKind, EventTemporalKind,
+    TimeSpec, TimelineEvent,
+};
 use crate::event_type::{DomainProfile, EventTypeId};
-use crate::event_validation::{EventValidationIssue, ValidationSeverity, validate_timeline_event};
+use crate::event_validation::{
+    EventValidationIssue, ValidationSeverity, validate_event_relations, validate_timeline_event,
+};
 use crate::model::{EventId, PlaceId};
 use crate::pack::{EventPack, PackKind, PackMetadata, SourceRecord};
 
@@ -30,6 +35,9 @@ pub struct ManualEventDraft {
     pub title: String,
     pub type_ref: EventTypeId,
     pub time: TimeSpec,
+    pub composition: EventCompositionKind,
+    pub temporal: EventTemporalKind,
+    pub boundary: crate::EventBoundaryKind,
     pub scale_kinds: Vec<EventScaleKind>,
     pub place: Option<PlaceId>,
     pub participants: Vec<EventParticipant>,
@@ -46,6 +54,9 @@ impl ManualEventDraft {
             title: title.into(),
             type_ref,
             time: TimeSpec::Unknown,
+            composition: EventCompositionKind::Atomic,
+            temporal: EventTemporalKind::Instant,
+            boundary: crate::EventBoundaryKind::None,
             scale_kinds: vec![EventScaleKind::Atomic],
             place: None,
             participants: Vec::new(),
@@ -79,6 +90,30 @@ impl ManualEventDraft {
         if self.scale_kinds.is_empty() {
             self.scale_kinds.push(EventScaleKind::Atomic);
         }
+        sync_axes_from_scale_kind_list(
+            &self.scale_kinds,
+            &mut self.composition,
+            &mut self.temporal,
+            &mut self.boundary,
+        );
+        self
+    }
+
+    pub fn with_composition_kind(mut self, composition: EventCompositionKind) -> Self {
+        self.composition = composition;
+        self.scale_kinds = scale_kinds_from_axes(&self.composition, &self.temporal, &self.boundary);
+        self
+    }
+
+    pub fn with_temporal_kind(mut self, temporal: EventTemporalKind) -> Self {
+        self.temporal = temporal;
+        self.scale_kinds = scale_kinds_from_axes(&self.composition, &self.temporal, &self.boundary);
+        self
+    }
+
+    pub fn with_boundary_kind(mut self, boundary: crate::EventBoundaryKind) -> Self {
+        self.boundary = boundary;
+        self.scale_kinds = scale_kinds_from_axes(&self.composition, &self.temporal, &self.boundary);
         self
     }
 
@@ -190,6 +225,9 @@ impl EventPackBuilder {
             title: draft.title,
             type_ref: draft.type_ref,
             time: draft.time,
+            composition: draft.composition,
+            temporal: draft.temporal,
+            boundary: draft.boundary,
             scale_kinds: draft.scale_kinds,
             place: draft.place,
             participants: draft.participants,
@@ -224,12 +262,78 @@ impl EventPackBuilder {
     }
 
     pub fn validate_events(&self) -> Vec<PackEventValidation> {
-        self.pack
+        let mut validations: Vec<PackEventValidation> = self
+            .pack
             .events
             .iter()
             .filter_map(|event| self.validate_event(event.id))
-            .collect()
+            .collect();
+
+        for issue in validate_event_relations(&self.pack.events, &self.pack.event_relations) {
+            let event_id = match &issue.kind {
+                crate::EventValidationIssueKind::BoundaryRoleMismatch { event_id, .. }
+                | crate::EventValidationIssueKind::BoundaryRoleInferred { event_id, .. } => {
+                    *event_id
+                }
+                _ => continue,
+            };
+            if let Some(validation) = validations
+                .iter_mut()
+                .find(|validation| validation.event_id == event_id)
+            {
+                validation.issues.push(issue);
+            } else {
+                validations.push(PackEventValidation {
+                    event_id,
+                    issues: vec![issue],
+                });
+            }
+        }
+
+        validations
     }
+}
+
+fn sync_axes_from_scale_kind_list(
+    scale_kinds: &[EventScaleKind],
+    composition: &mut EventCompositionKind,
+    temporal: &mut EventTemporalKind,
+    boundary: &mut crate::EventBoundaryKind,
+) {
+    *composition = if scale_kinds.contains(&EventScaleKind::Composite) {
+        EventCompositionKind::Composite
+    } else {
+        EventCompositionKind::Atomic
+    };
+    *temporal = if scale_kinds.contains(&EventScaleKind::Interval) {
+        EventTemporalKind::Interval
+    } else {
+        EventTemporalKind::Instant
+    };
+    *boundary = if scale_kinds.contains(&EventScaleKind::Boundary) {
+        crate::EventBoundaryKind::StartAndEnd
+    } else {
+        crate::EventBoundaryKind::None
+    };
+}
+
+fn scale_kinds_from_axes(
+    composition: &EventCompositionKind,
+    temporal: &EventTemporalKind,
+    boundary: &crate::EventBoundaryKind,
+) -> Vec<EventScaleKind> {
+    let mut scale_kinds = Vec::new();
+    scale_kinds.push(match composition {
+        EventCompositionKind::Atomic => EventScaleKind::Atomic,
+        EventCompositionKind::Composite => EventScaleKind::Composite,
+    });
+    if *temporal == EventTemporalKind::Interval {
+        scale_kinds.push(EventScaleKind::Interval);
+    }
+    if *boundary != crate::EventBoundaryKind::None {
+        scale_kinds.push(EventScaleKind::Boundary);
+    }
+    scale_kinds
 }
 
 #[cfg(test)]

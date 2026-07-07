@@ -43,7 +43,7 @@ mod tests {
     fn sample_timeline_document_contains_active_sample_packs() {
         let document = sample_timeline_document();
 
-        assert_eq!(document.active_packs().count(), 3);
+        assert_eq!(document.active_packs().count(), 4);
         assert!(
             !document
                 .active_events_in_year_span(YearSpan::exact(1942))
@@ -59,8 +59,8 @@ mod tests {
         let parsed = timeline_document_from_json(&json).expect("parse document json");
 
         assert_eq!(parsed.version, TimelineDocument::CURRENT_VERSION);
-        assert_eq!(parsed.packs.len(), 3);
-        assert_eq!(parsed.active_pack_ids.len(), 3);
+        assert_eq!(parsed.packs.len(), 4);
+        assert_eq!(parsed.active_pack_ids.len(), 4);
     }
 
     #[test]
@@ -71,7 +71,7 @@ mod tests {
         let parsed = timeline_document_from_toml(&toml_text).expect("parse document toml");
 
         assert_eq!(parsed.version, TimelineDocument::CURRENT_VERSION);
-        assert_eq!(parsed.packs.len(), 3);
-        assert_eq!(parsed.active_pack_ids.len(), 3);
+        assert_eq!(parsed.packs.len(), 4);
+        assert_eq!(parsed.active_pack_ids.len(), 4);
     }
 }

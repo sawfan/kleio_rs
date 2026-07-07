@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::event::{TimeSpec, TimelineEvent};
+use crate::event::{EventBoundaryKind, EventRelation, EventRelationKind, TimeSpec, TimelineEvent};
 use crate::event_type::{DomainProfile, EventConstraint, EventTypeDef, RoleId};
 
 #[derive(
@@ -42,10 +42,32 @@ pub enum ValidationSeverity {
 pub enum EventValidationIssueKind {
     UnknownEventType,
     DuplicateEventTypeId,
-    DuplicateRoleId { role: RoleId },
-    RoleNotAllowed { role: RoleId },
-    RoleCountTooLow { role: RoleId, actual: u16, min: u16 },
-    RoleCountTooHigh { role: RoleId, actual: u16, max: u16 },
+    DuplicateRoleId {
+        role: RoleId,
+    },
+    RoleNotAllowed {
+        role: RoleId,
+    },
+    RoleCountTooLow {
+        role: RoleId,
+        actual: u16,
+        min: u16,
+    },
+    RoleCountTooHigh {
+        role: RoleId,
+        actual: u16,
+        max: u16,
+    },
+    BoundaryRoleMismatch {
+        event_id: crate::EventId,
+        relation: EventRelationKind,
+        boundary: EventBoundaryKind,
+    },
+    BoundaryRoleInferred {
+        event_id: crate::EventId,
+        relation: EventRelationKind,
+        inferred: EventBoundaryKind,
+    },
     PlaceRecommended,
     TimeRecommended,
 }
@@ -120,6 +142,63 @@ pub fn validate_domain_profile(profile: &DomainProfile) -> Vec<EventValidationIs
                     "duplicate event type id `{}` in profile `{}`",
                     event_type.id.as_str(),
                     profile.id.as_str()
+                ),
+            ));
+        }
+    }
+
+    issues
+}
+
+pub fn validate_event_relations(
+    events: &[TimelineEvent],
+    relations: &[EventRelation],
+) -> Vec<EventValidationIssue> {
+    let mut issues = Vec::new();
+
+    for relation in relations {
+        let Some(child) = events
+            .iter()
+            .find(|event| event.id == relation.child_event_id)
+        else {
+            continue;
+        };
+        let Some(implied_boundary) = relation.kind.implied_child_boundary() else {
+            continue;
+        };
+        let actual_boundary = child.boundary_kind();
+        if actual_boundary == EventBoundaryKind::None {
+            issues.push(EventValidationIssue::warning(
+                EventValidationIssueKind::BoundaryRoleInferred {
+                    event_id: child.id,
+                    relation: relation.kind.clone(),
+                    inferred: implied_boundary.clone(),
+                },
+                format!(
+                    "event #{} is used as a {:?} boundary but has no explicit boundary role; inferred {:?}",
+                    child.id.0, relation.kind, implied_boundary
+                ),
+            ));
+            continue;
+        }
+
+        let matches_relation = match implied_boundary {
+            EventBoundaryKind::Start => actual_boundary.includes_start(),
+            EventBoundaryKind::End => actual_boundary.includes_end(),
+            EventBoundaryKind::None | EventBoundaryKind::StartAndEnd => true,
+        };
+        if !matches_relation {
+            issues.push(EventValidationIssue::warning(
+                EventValidationIssueKind::BoundaryRoleMismatch {
+                    event_id: child.id,
+                    relation: relation.kind.clone(),
+                    boundary: actual_boundary,
+                },
+                format!(
+                    "event #{} is linked via {:?} but has boundary role {:?}",
+                    child.id.0,
+                    relation.kind,
+                    child.boundary_kind()
                 ),
             ));
         }
@@ -299,6 +378,49 @@ mod tests {
         assert!(issues.iter().any(|issue| matches!(
             &issue.kind,
             EventValidationIssueKind::RoleNotAllowed { role } if role.as_str() == "commander"
+        )));
+    }
+
+    #[test]
+    fn relation_validation_accepts_matching_boundary_roles() {
+        let events = vec![
+            TimelineEvent::new(EventId(1), EventTypeId::new("genealogy.life"), "Life")
+                .with_composition_kind(crate::EventCompositionKind::Composite)
+                .with_temporal_kind(crate::EventTemporalKind::Interval),
+            TimelineEvent::new(EventId(2), EventTypeId::new("genealogy.birth"), "Birth")
+                .with_boundary_kind(EventBoundaryKind::Start),
+        ];
+        let relations = vec![EventRelation::new(
+            EventId(1),
+            EventId(2),
+            EventRelationKind::Starts,
+        )];
+
+        let issues = validate_event_relations(&events, &relations);
+
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn relation_validation_warns_for_boundary_role_mismatch() {
+        let events = vec![
+            TimelineEvent::new(EventId(1), EventTypeId::new("genealogy.life"), "Life")
+                .with_composition_kind(crate::EventCompositionKind::Composite)
+                .with_temporal_kind(crate::EventTemporalKind::Interval),
+            TimelineEvent::new(EventId(2), EventTypeId::new("genealogy.death"), "Death")
+                .with_boundary_kind(EventBoundaryKind::End),
+        ];
+        let relations = vec![EventRelation::new(
+            EventId(1),
+            EventId(2),
+            EventRelationKind::Starts,
+        )];
+
+        let issues = validate_event_relations(&events, &relations);
+
+        assert!(issues.iter().any(|issue| matches!(
+            issue.kind,
+            EventValidationIssueKind::BoundaryRoleMismatch { .. }
         )));
     }
 }

@@ -4,7 +4,9 @@
 //! GEDCOM/Wikidata-derived `model::Event` values without forcing an immediate
 //! rewrite of the genealogy archive format.
 
-use crate::event::{EventParticipant, TimeSpec, TimelineEvent};
+use crate::event::{
+    EventBoundaryKind, EventCompositionKind, EventParticipant, TimeSpec, TimelineEvent,
+};
 use crate::event_type::EventTypeId;
 use crate::model::{Event, EventKind, PersonId};
 
@@ -59,6 +61,37 @@ pub fn genealogy_event_label(kind: &EventKind) -> String {
     }
 }
 
+pub fn genealogy_event_classification(
+    kind: &EventKind,
+) -> (
+    EventCompositionKind,
+    crate::EventTemporalKind,
+    EventBoundaryKind,
+) {
+    match kind {
+        EventKind::Birth => (
+            EventCompositionKind::Atomic,
+            crate::EventTemporalKind::Instant,
+            EventBoundaryKind::Start,
+        ),
+        EventKind::Death => (
+            EventCompositionKind::Atomic,
+            crate::EventTemporalKind::Instant,
+            EventBoundaryKind::End,
+        ),
+        EventKind::Residence | EventKind::Occupation => (
+            EventCompositionKind::Atomic,
+            crate::EventTemporalKind::Interval,
+            EventBoundaryKind::None,
+        ),
+        EventKind::Marriage | EventKind::Baptism | EventKind::Burial | EventKind::Other(_) => (
+            EventCompositionKind::Atomic,
+            crate::EventTemporalKind::Instant,
+            EventBoundaryKind::None,
+        ),
+    }
+}
+
 pub fn genealogy_event_scale_kinds(kind: &EventKind) -> Vec<crate::EventScaleKind> {
     match kind {
         EventKind::Birth | EventKind::Death => {
@@ -91,6 +124,10 @@ pub fn timeline_event_from_genealogy_event(event: &Event) -> TimelineEvent {
         .clone()
         .map(TimeSpec::from_date_value)
         .unwrap_or(TimeSpec::Unknown);
+    let (composition, temporal, boundary) = genealogy_event_classification(&event.kind);
+    timeline_event.composition = composition;
+    timeline_event.temporal = temporal;
+    timeline_event.boundary = boundary;
     timeline_event.scale_kinds = genealogy_event_scale_kinds(&event.kind);
     timeline_event.place = event.place;
     timeline_event.description = event.description.clone();
@@ -154,6 +191,8 @@ mod tests {
         assert_eq!(timeline_event.title, "Birth");
         assert_eq!(timeline_event.time.display(), "1901");
         assert!(timeline_event.is_scale_kind(crate::EventScaleKind::Atomic));
+        assert_eq!(timeline_event.temporal, crate::EventTemporalKind::Instant);
+        assert_eq!(timeline_event.boundary, crate::EventBoundaryKind::Start);
         assert!(timeline_event.is_scale_kind(crate::EventScaleKind::Boundary));
         assert_eq!(timeline_event.participants.len(), 1);
         assert_eq!(timeline_event.participants[0].role.as_str(), ROLE_CHILD);

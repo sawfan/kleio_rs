@@ -5,9 +5,7 @@
 //! person's scale-relative "life" interval composed from birth/death boundary
 //! events.
 
-use crate::event::{
-    EventParticipant, EventRelation, EventRelationKind, EventScaleKind, TimelineEvent,
-};
+use crate::event::{EventParticipant, EventRelation, EventRelationKind, TimelineEvent};
 use crate::event_adapter::{GENEALOGY_BIRTH_TYPE, GENEALOGY_DEATH_TYPE, ROLE_SUBJECT};
 use crate::event_composition::{
     boundary_relations_for_composite, composite_interval_from_boundaries, event_by_id,
@@ -75,9 +73,7 @@ pub fn compose_person_life_from_events(
 }
 
 pub fn is_life_event(event: &TimelineEvent) -> bool {
-    event.type_ref.as_str() == GENEALOGY_LIFE_TYPE
-        && event.is_scale_kind(EventScaleKind::Composite)
-        && event.is_scale_kind(EventScaleKind::Interval)
+    event.type_ref.as_str() == GENEALOGY_LIFE_TYPE && event.is_composite() && event.is_interval()
 }
 
 pub fn life_boundary_events<'a>(
@@ -151,6 +147,9 @@ mod tests {
             &events,
         );
 
+        assert_eq!(life.composition, crate::EventCompositionKind::Composite);
+        assert_eq!(life.temporal, crate::EventTemporalKind::Interval);
+        assert_eq!(life.boundary, crate::EventBoundaryKind::None);
         assert!(is_life_event(&life));
         assert_eq!(life.time.display(), "1815 to 1852");
         assert_eq!(relations.len(), 2);

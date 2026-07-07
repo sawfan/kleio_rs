@@ -117,6 +117,101 @@ impl Approximation {
     Clone,
     PartialEq,
     Eq,
+    Default,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum EventCompositionKind {
+    /// A directly asserted event, not modeled as being made from child events.
+    #[default]
+    Atomic,
+
+    /// A higher-scale event composed from child events.
+    Composite,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum EventTemporalKind {
+    /// A point-like event at the current modeling scale.
+    #[default]
+    Instant,
+
+    /// A state, process, condition, or period with duration.
+    Interval,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum EventBoundaryKind {
+    /// Not specifically a boundary marker.
+    #[default]
+    None,
+
+    /// Starts another event or interval.
+    Start,
+
+    /// Ends another event or interval.
+    End,
+
+    /// Both starts and ends another modeled thing.
+    StartAndEnd,
+}
+
+impl EventBoundaryKind {
+    pub fn includes_start(&self) -> bool {
+        matches!(self, Self::Start | Self::StartAndEnd)
+    }
+
+    pub fn includes_end(&self) -> bool {
+        matches!(self, Self::End | Self::StartAndEnd)
+    }
+
+    pub fn with_start(&self) -> Self {
+        match self {
+            Self::None => Self::Start,
+            Self::Start => Self::Start,
+            Self::End | Self::StartAndEnd => Self::StartAndEnd,
+        }
+    }
+
+    pub fn with_end(&self) -> Self {
+        match self {
+            Self::None => Self::End,
+            Self::End => Self::End,
+            Self::Start | Self::StartAndEnd => Self::StartAndEnd,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
     Archive,
     Serialize,
     Deserialize,
@@ -158,6 +253,22 @@ pub enum EventRelationKind {
     ContextFor,
     SubEvent,
     Custom(String),
+}
+
+impl EventRelationKind {
+    pub fn implied_child_boundary(&self) -> Option<EventBoundaryKind> {
+        match self {
+            Self::Starts => Some(EventBoundaryKind::Start),
+            Self::Ends => Some(EventBoundaryKind::End),
+            Self::Contains
+            | Self::OccursWithin
+            | Self::EvidenceFor
+            | Self::Summarizes
+            | Self::ContextFor
+            | Self::SubEvent
+            | Self::Custom(_) => None,
+        }
+    }
 }
 
 #[derive(
@@ -238,6 +349,19 @@ pub struct TimelineEvent {
     pub title: String,
     pub type_ref: EventTypeId,
     pub time: TimeSpec,
+
+    /// Composition and temporal form are intentionally separate axes:
+    /// a life, reign, job, or war can be both composite and interval-like.
+    #[serde(default)]
+    pub composition: EventCompositionKind,
+    #[serde(default)]
+    pub temporal: EventTemporalKind,
+    #[serde(default)]
+    pub boundary: EventBoundaryKind,
+
+    /// Legacy classification used by the first timeline prototype. Keep this
+    /// while documents migrate to the split-axis fields above.
+    #[serde(default = "default_event_scale_kinds")]
     pub scale_kinds: Vec<EventScaleKind>,
     pub place: Option<PlaceId>,
     pub participants: Vec<EventParticipant>,
@@ -254,7 +378,10 @@ impl TimelineEvent {
             title: title.into(),
             type_ref,
             time: TimeSpec::Unknown,
-            scale_kinds: vec![EventScaleKind::Atomic],
+            composition: EventCompositionKind::Atomic,
+            temporal: EventTemporalKind::Instant,
+            boundary: EventBoundaryKind::None,
+            scale_kinds: default_event_scale_kinds(),
             place: None,
             participants: Vec::new(),
             description: None,
@@ -269,7 +396,31 @@ impl TimelineEvent {
         self
     }
 
+    pub fn with_composition_kind(mut self, composition: EventCompositionKind) -> Self {
+        self.composition = composition;
+        self.refresh_legacy_scale_kinds();
+        self
+    }
+
+    pub fn with_temporal_kind(mut self, temporal: EventTemporalKind) -> Self {
+        self.temporal = temporal;
+        self.refresh_legacy_scale_kinds();
+        self
+    }
+
+    pub fn with_boundary_kind(mut self, boundary: EventBoundaryKind) -> Self {
+        self.boundary = boundary;
+        self.refresh_legacy_scale_kinds();
+        self
+    }
+
     pub fn with_scale_kind(mut self, scale_kind: EventScaleKind) -> Self {
+        apply_scale_kind_to_axes(
+            scale_kind.clone(),
+            &mut self.composition,
+            &mut self.temporal,
+            &mut self.boundary,
+        );
         if !self.scale_kinds.contains(&scale_kind) {
             self.scale_kinds.push(scale_kind);
         }
@@ -287,19 +438,155 @@ impl TimelineEvent {
             }
         }
         if self.scale_kinds.is_empty() {
-            self.scale_kinds.push(EventScaleKind::Atomic);
+            self.scale_kinds = default_event_scale_kinds();
         }
+        sync_axes_from_scale_kinds(
+            &self.scale_kinds,
+            &mut self.composition,
+            &mut self.temporal,
+            &mut self.boundary,
+        );
         self
     }
 
+    pub fn composition_kind(&self) -> EventCompositionKind {
+        if self.scale_kinds.contains(&EventScaleKind::Composite) {
+            EventCompositionKind::Composite
+        } else {
+            self.composition.clone()
+        }
+    }
+
+    pub fn temporal_kind(&self) -> EventTemporalKind {
+        if self.scale_kinds.contains(&EventScaleKind::Interval) {
+            EventTemporalKind::Interval
+        } else {
+            self.temporal.clone()
+        }
+    }
+
+    pub fn boundary_kind(&self) -> EventBoundaryKind {
+        if self.boundary != EventBoundaryKind::None {
+            self.boundary.clone()
+        } else if self.scale_kinds.contains(&EventScaleKind::Boundary) {
+            EventBoundaryKind::StartAndEnd
+        } else {
+            EventBoundaryKind::None
+        }
+    }
+
     pub fn is_scale_kind(&self, scale_kind: EventScaleKind) -> bool {
-        self.scale_kinds.contains(&scale_kind)
+        match scale_kind {
+            EventScaleKind::Atomic => self.composition_kind() == EventCompositionKind::Atomic,
+            EventScaleKind::Composite => self.is_composite(),
+            EventScaleKind::Interval => self.is_interval(),
+            EventScaleKind::Boundary => self.is_boundary(),
+        }
+    }
+
+    pub fn is_composite(&self) -> bool {
+        self.composition_kind() == EventCompositionKind::Composite
+    }
+
+    pub fn is_interval(&self) -> bool {
+        self.temporal_kind() == EventTemporalKind::Interval
+    }
+
+    pub fn is_boundary(&self) -> bool {
+        self.boundary_kind() != EventBoundaryKind::None
+    }
+
+    pub fn classification_label(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(match self.composition_kind() {
+            EventCompositionKind::Atomic => "Atomic",
+            EventCompositionKind::Composite => "Composite",
+        });
+        parts.push(match self.temporal_kind() {
+            EventTemporalKind::Instant => "Instant",
+            EventTemporalKind::Interval => "Interval",
+        });
+        match self.boundary_kind() {
+            EventBoundaryKind::None => {}
+            EventBoundaryKind::Start => parts.push("Boundary: start"),
+            EventBoundaryKind::End => parts.push("Boundary: end"),
+            EventBoundaryKind::StartAndEnd => parts.push("Boundary"),
+        }
+        parts.join(" · ")
+    }
+
+    fn refresh_legacy_scale_kinds(&mut self) {
+        self.scale_kinds = scale_kinds_from_axes(&self.composition, &self.temporal, &self.boundary);
     }
 
     pub fn with_participant(mut self, participant: EventParticipant) -> Self {
         self.participants.push(participant);
         self
     }
+}
+
+fn default_event_scale_kinds() -> Vec<EventScaleKind> {
+    vec![EventScaleKind::Atomic]
+}
+
+fn sync_axes_from_scale_kinds(
+    scale_kinds: &[EventScaleKind],
+    composition: &mut EventCompositionKind,
+    temporal: &mut EventTemporalKind,
+    boundary: &mut EventBoundaryKind,
+) {
+    *composition = if scale_kinds.contains(&EventScaleKind::Composite) {
+        EventCompositionKind::Composite
+    } else {
+        EventCompositionKind::Atomic
+    };
+    *temporal = if scale_kinds.contains(&EventScaleKind::Interval) {
+        EventTemporalKind::Interval
+    } else {
+        EventTemporalKind::Instant
+    };
+    *boundary = if scale_kinds.contains(&EventScaleKind::Boundary) {
+        EventBoundaryKind::StartAndEnd
+    } else {
+        EventBoundaryKind::None
+    };
+}
+
+fn apply_scale_kind_to_axes(
+    scale_kind: EventScaleKind,
+    composition: &mut EventCompositionKind,
+    temporal: &mut EventTemporalKind,
+    boundary: &mut EventBoundaryKind,
+) {
+    match scale_kind {
+        EventScaleKind::Atomic => *composition = EventCompositionKind::Atomic,
+        EventScaleKind::Composite => *composition = EventCompositionKind::Composite,
+        EventScaleKind::Interval => *temporal = EventTemporalKind::Interval,
+        EventScaleKind::Boundary => {
+            if *boundary == EventBoundaryKind::None {
+                *boundary = EventBoundaryKind::StartAndEnd;
+            }
+        }
+    }
+}
+
+fn scale_kinds_from_axes(
+    composition: &EventCompositionKind,
+    temporal: &EventTemporalKind,
+    boundary: &EventBoundaryKind,
+) -> Vec<EventScaleKind> {
+    let mut scale_kinds = Vec::new();
+    scale_kinds.push(match composition {
+        EventCompositionKind::Atomic => EventScaleKind::Atomic,
+        EventCompositionKind::Composite => EventScaleKind::Composite,
+    });
+    if *temporal == EventTemporalKind::Interval {
+        scale_kinds.push(EventScaleKind::Interval);
+    }
+    if *boundary != EventBoundaryKind::None {
+        scale_kinds.push(EventScaleKind::Boundary);
+    }
+    scale_kinds
 }
 
 #[cfg(test)]
@@ -327,8 +614,30 @@ mod tests {
             .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval]);
 
         assert!(!event.is_scale_kind(EventScaleKind::Atomic));
+        assert_eq!(event.composition, EventCompositionKind::Composite);
+        assert_eq!(event.temporal, EventTemporalKind::Interval);
+        assert_eq!(event.boundary, EventBoundaryKind::None);
         assert!(event.is_scale_kind(EventScaleKind::Composite));
         assert!(event.is_scale_kind(EventScaleKind::Interval));
+    }
+
+    #[test]
+    fn split_axis_classification_keeps_composition_temporal_and_boundary_independent() {
+        let birth = TimelineEvent::new(EventId(3), EventTypeId::new("genealogy.birth"), "Birth")
+            .with_boundary_kind(EventBoundaryKind::Start);
+        let life = TimelineEvent::new(EventId(4), EventTypeId::new("genealogy.life"), "Life")
+            .with_composition_kind(EventCompositionKind::Composite)
+            .with_temporal_kind(EventTemporalKind::Interval);
+
+        assert_eq!(birth.composition, EventCompositionKind::Atomic);
+        assert_eq!(birth.temporal, EventTemporalKind::Instant);
+        assert_eq!(birth.boundary, EventBoundaryKind::Start);
+        assert!(birth.is_boundary());
+        assert_eq!(life.composition, EventCompositionKind::Composite);
+        assert_eq!(life.temporal, EventTemporalKind::Interval);
+        assert_eq!(life.boundary, EventBoundaryKind::None);
+        assert!(life.is_composite());
+        assert!(life.is_interval());
     }
 
     #[test]

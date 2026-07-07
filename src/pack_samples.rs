@@ -5,7 +5,10 @@
 //! SQLite, or browser storage.
 
 use crate::attribution::Provenance;
-use crate::event::{EventParticipant, EventRelationKind, EventScaleKind, TimeSpec};
+use crate::event::{
+    EventBoundaryKind, EventCompositionKind, EventParticipant, EventRelationKind,
+    EventTemporalKind, TimeSpec,
+};
 use crate::event_composition::boundary_relations_for_composite;
 use crate::event_type::{EventTypeId, genealogy_domain_profile, journal_domain_profile};
 use crate::model::{DateValue, EventId, PersonId};
@@ -46,7 +49,7 @@ pub fn sample_biography_pack() -> EventPack {
             EventTypeId::new("genealogy.birth"),
             "Birth of sample person",
         )
-        .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+        .with_boundary_kind(EventBoundaryKind::Start)
         .with_time(TimeSpec::from_date_value(DateValue::from_original(
             "1901",
             Provenance::default(),
@@ -58,7 +61,7 @@ pub fn sample_biography_pack() -> EventPack {
             EventTypeId::new("genealogy.death"),
             "Death of sample person",
         )
-        .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+        .with_boundary_kind(EventBoundaryKind::End)
         .with_time(TimeSpec::from_date_value(DateValue::from_original(
             "1980",
             Provenance::default(),
@@ -67,7 +70,8 @@ pub fn sample_biography_pack() -> EventPack {
     );
     let life_id = builder.add_manual_event(
         ManualEventDraft::new(EventTypeId::new("genealogy.life"), "Sample person lived")
-            .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+            .with_composition_kind(EventCompositionKind::Composite)
+            .with_temporal_kind(EventTemporalKind::Interval)
             .with_time(TimeSpec::Range {
                 start: Some(DateValue::from_original("1901", Provenance::default())),
                 end: Some(DateValue::from_original("1980", Provenance::default())),
@@ -92,7 +96,8 @@ pub fn sample_history_pack() -> EventPack {
             EventTypeId::new("history.period"),
             "A sample historical period",
         )
-        .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+        .with_composition_kind(EventCompositionKind::Composite)
+        .with_temporal_kind(EventTemporalKind::Interval)
         .with_time(TimeSpec::Range {
             start: Some(DateValue::from_original("1939", Provenance::default())),
             end: Some(DateValue::from_original("1945", Provenance::default())),
@@ -127,7 +132,7 @@ pub fn sample_life_stages_pack() -> EventPack {
 
     let birth_id = builder.add_manual_event(
         ManualEventDraft::new(EventTypeId::new("genealogy.birth"), "Alex Morgan is born")
-            .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+            .with_boundary_kind(EventBoundaryKind::Start)
             .with_time(TimeSpec::from_date_value(DateValue::from_original(
                 "1990",
                 Provenance::default(),
@@ -236,7 +241,7 @@ pub fn sample_life_stages_pack() -> EventPack {
     );
     let death_id = builder.add_manual_event(
         ManualEventDraft::new(EventTypeId::new("genealogy.death"), "Alex Morgan dies")
-            .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+            .with_boundary_kind(EventBoundaryKind::End)
             .with_time(TimeSpec::from_date_value(DateValue::from_original(
                 "2068",
                 Provenance::default(),
@@ -245,7 +250,8 @@ pub fn sample_life_stages_pack() -> EventPack {
     );
     let life_id = builder.add_manual_event(
         ManualEventDraft::new(EventTypeId::new("genealogy.life"), "Alex Morgan lived")
-            .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+            .with_composition_kind(EventCompositionKind::Composite)
+            .with_temporal_kind(EventTemporalKind::Interval)
             .with_time(TimeSpec::Range {
                 start: Some(DateValue::from_original("1990", Provenance::default())),
                 end: Some(DateValue::from_original("2068", Provenance::default())),
@@ -309,7 +315,7 @@ fn boundary_draft(
     person_id: PersonId,
 ) -> ManualEventDraft {
     ManualEventDraft::new(EventTypeId::new(event_type), title)
-        .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+        .with_boundary_kind(EventBoundaryKind::StartAndEnd)
         .with_time(TimeSpec::from_date_value(DateValue::from_original(
             date,
             Provenance::default(),
@@ -325,7 +331,8 @@ fn period_draft(
     person_id: PersonId,
 ) -> ManualEventDraft {
     ManualEventDraft::new(EventTypeId::new(event_type), title)
-        .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+        .with_composition_kind(EventCompositionKind::Composite)
+        .with_temporal_kind(EventTemporalKind::Interval)
         .with_time(TimeSpec::Range {
             start: Some(DateValue::from_original(start, Provenance::default())),
             end: Some(DateValue::from_original(end, Provenance::default())),

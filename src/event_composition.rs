@@ -6,7 +6,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::event::{EventRelation, EventRelationKind, EventScaleKind, TimeSpec, TimelineEvent};
+use crate::event::{
+    EventCompositionKind, EventRelation, EventRelationKind, EventTemporalKind, TimeSpec,
+    TimelineEvent,
+};
 use crate::event_type::EventTypeId;
 use crate::model::{DateValue, EventId};
 
@@ -109,7 +112,8 @@ pub fn composite_interval_from_boundaries(
     let end = end_boundary.and_then(representative_date_value);
 
     TimelineEvent::new(id, type_ref, title)
-        .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+        .with_composition_kind(EventCompositionKind::Composite)
+        .with_temporal_kind(EventTemporalKind::Interval)
         .with_time(TimeSpec::Range { start, end })
 }
 
@@ -184,16 +188,19 @@ mod tests {
             Some(&death),
         );
 
-        assert!(life.is_scale_kind(EventScaleKind::Composite));
-        assert!(life.is_scale_kind(EventScaleKind::Interval));
+        assert_eq!(life.composition, EventCompositionKind::Composite);
+        assert_eq!(life.temporal, EventTemporalKind::Interval);
+        assert_eq!(life.boundary, crate::EventBoundaryKind::None);
+        assert!(life.is_composite());
+        assert!(life.is_interval());
         assert_eq!(life.time.display(), "1815 to 1852");
     }
 
     #[test]
     fn collapsed_parent_hides_direct_children() {
         let life = TimelineEvent::new(EventId(100), EventTypeId::new("genealogy.life"), "Life")
-            .with_scale_kind(EventScaleKind::Composite)
-            .with_scale_kind(EventScaleKind::Interval);
+            .with_composition_kind(EventCompositionKind::Composite)
+            .with_temporal_kind(EventTemporalKind::Interval);
         let birth = TimelineEvent::new(EventId(1), EventTypeId::new("genealogy.birth"), "Birth")
             .with_participant(EventParticipant::new(PersonId(7), "child"));
         let death = TimelineEvent::new(EventId(2), EventTypeId::new("genealogy.death"), "Death");
