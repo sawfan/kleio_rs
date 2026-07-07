@@ -14,6 +14,10 @@ use crate::event_type::{EventTypeId, genealogy_domain_profile, journal_domain_pr
 use crate::model::{DateValue, EventId, PersonId};
 use crate::pack::{EventPack, PackId, PackKind, PackMetadata};
 use crate::pack_builder::{EventPackBuilder, ManualEventDraft};
+use crate::timeline_source::{
+    TimelineSource, TimelineSourceItem, TimelineSourceMeta, TimelineSourcePackKind,
+    event_pack_from_timeline_source,
+};
 
 pub fn sample_journal_pack() -> EventPack {
     let mut builder = EventPackBuilder::new(
@@ -76,7 +80,8 @@ pub fn sample_biography_pack() -> EventPack {
                 start: Some(DateValue::from_original("1901", Provenance::default())),
                 end: Some(DateValue::from_original("1980", Provenance::default())),
             })
-            .with_participant(EventParticipant::new(person_id, "subject")),
+            .with_participant(EventParticipant::new(person_id, "subject"))
+            .with_description("Template life interval: birth year/date to present. Add a death event/end boundary only when modeling a deceased person."),
     );
 
     for relation in boundary_relations_for_composite(life_id, Some(birth_id), Some(death_id)) {
@@ -123,180 +128,102 @@ pub fn sample_history_pack() -> EventPack {
 }
 
 pub fn sample_life_stages_pack() -> EventPack {
-    let person_id = PersonId(42);
-    let mut builder = EventPackBuilder::new(
-        PackMetadata::new(PackId::new("sample:life-stages"), "Sample life stages"),
-        PackKind::Biography,
-    );
-    builder.add_domain_profile(genealogy_domain_profile());
+    event_pack_from_timeline_source(&sample_life_stages_source())
+}
 
-    let birth_id = builder.add_manual_event(
-        ManualEventDraft::new(EventTypeId::new("genealogy.birth"), "Alex Morgan is born")
-            .with_boundary_kind(EventBoundaryKind::Start)
-            .with_time(TimeSpec::from_date_value(DateValue::from_original(
-                "1990",
-                Provenance::default(),
-            )))
-            .with_participant(EventParticipant::new(person_id, "child")),
-    );
-    let start_elementary_id = builder.add_manual_event(
-        boundary_draft(
-            "education.started_elementary_school",
-            "Starts elementary school",
-            "1996",
-            person_id,
-        )
-        .with_description("Alex starts elementary school."),
-    );
-    let finish_elementary_id = builder.add_manual_event(
-        boundary_draft(
-            "education.finished_elementary_school",
-            "Finishes elementary school",
-            "2002",
-            person_id,
-        )
-        .with_description("Alex finishes elementary school."),
-    );
-    let elementary_id = builder.add_manual_event(
-        period_draft(
-            "education.elementary_school",
-            "Elementary school",
-            "1996",
-            "2002",
-            person_id,
-        )
-        .with_description("Alex attends elementary school."),
-    );
-    let start_high_school_id = builder.add_manual_event(
-        boundary_draft(
-            "education.started_high_school",
-            "Starts high school",
-            "2004",
-            person_id,
-        )
-        .with_description("Alex starts high school."),
-    );
-    let finish_high_school_id = builder.add_manual_event(
-        boundary_draft(
-            "education.finished_high_school",
-            "Graduates high school",
-            "2008",
-            person_id,
-        )
-        .with_description("Alex graduates high school."),
-    );
-    let high_school_id = builder.add_manual_event(
-        period_draft(
-            "education.high_school",
-            "High school",
-            "2004",
-            "2008",
-            person_id,
-        )
-        .with_description("Alex attends high school."),
-    );
-    let start_college_id = builder.add_manual_event(
-        boundary_draft(
-            "education.started_college",
-            "Starts college",
-            "2008",
-            person_id,
-        )
-        .with_description("Alex starts college."),
-    );
-    let finish_college_id = builder.add_manual_event(
-        boundary_draft(
-            "education.finished_college",
-            "Graduates college",
-            "2012",
-            person_id,
-        )
-        .with_description("Alex graduates college."),
-    );
-    let college_id = builder.add_manual_event(
-        period_draft("education.college", "College", "2008", "2012", person_id)
-            .with_description("Alex attends college."),
-    );
-    let start_job_id = builder.add_manual_event(
-        boundary_draft("career.started_job", "Starts first job", "2013", person_id)
-            .with_description("Alex starts a long-term career position."),
-    );
-    let job_id = builder.add_manual_event(
-        period_draft(
-            "career.job",
-            "First long-term job",
-            "2013",
-            "2055",
-            person_id,
-        )
-        .with_description("Alex starts and maintains a long-term career position."),
-    );
-    let marriage_start_id = builder.add_manual_event(
-        boundary_draft("genealogy.marriage", "Gets married", "2017", person_id)
-            .with_description("Alex gets married."),
-    );
-    let marriage_id = builder.add_manual_event(
-        period_draft("genealogy.marriage", "Marriage", "2017", "2068", person_id)
-            .with_description("Alex's marriage period."),
-    );
-    let death_id = builder.add_manual_event(
-        ManualEventDraft::new(EventTypeId::new("genealogy.death"), "Alex Morgan dies")
-            .with_boundary_kind(EventBoundaryKind::End)
-            .with_time(TimeSpec::from_date_value(DateValue::from_original(
-                "2068",
-                Provenance::default(),
-            )))
-            .with_participant(EventParticipant::new(person_id, "deceased")),
-    );
-    let life_id = builder.add_manual_event(
-        ManualEventDraft::new(EventTypeId::new("genealogy.life"), "Alex Morgan lived")
-            .with_composition_kind(EventCompositionKind::Composite)
-            .with_temporal_kind(EventTemporalKind::Interval)
-            .with_time(TimeSpec::Range {
-                start: Some(DateValue::from_original("1990", Provenance::default())),
-                end: Some(DateValue::from_original("2068", Provenance::default())),
-            })
-            .with_participant(EventParticipant::new(person_id, "subject")),
-    );
-
-    for relation in boundary_relations_for_composite(life_id, Some(birth_id), Some(death_id)) {
-        builder.add_event_relation(relation);
+pub fn sample_life_stages_source() -> TimelineSource {
+    TimelineSource {
+        meta: TimelineSourceMeta {
+            id: Some("sample:life-stages".to_string()),
+            title: "Life timeline template".to_string(),
+            kind: Some(TimelineSourcePackKind::Biography),
+            description: Some(
+                "A starter personal timeline source. Replace `Your Name`, dates, places, and details with your own life events."
+                    .to_string(),
+            ),
+            subject: Some("Your Name".to_string()),
+            person_id: Some(42),
+        },
+        items: vec![
+            TimelineSourceItem {
+                section: "birth".to_string(),
+                title: "Your Name is born".to_string(),
+                start: "1990".to_string(),
+                end: None,
+                current: false,
+                place: Some("Replace with birthplace".to_string()),
+                details: Some("Replace 1990 with your birth year/date and add any notes you want to keep.".to_string()),
+                start_label: None,
+                end_label: None,
+            },
+            TimelineSourceItem {
+                section: "education".to_string(),
+                title: "Elementary or primary school".to_string(),
+                start: "1996".to_string(),
+                end: Some("2002".to_string()),
+                current: false,
+                place: Some("Replace with school/place".to_string()),
+                details: Some("Replace with your school name, place, and notes for this period.".to_string()),
+                start_label: Some("Starts elementary school".to_string()),
+                end_label: Some("Finishes elementary school".to_string()),
+            },
+            TimelineSourceItem {
+                section: "education".to_string(),
+                title: "High school".to_string(),
+                start: "2004".to_string(),
+                end: Some("2008".to_string()),
+                current: false,
+                place: Some("Replace with high school/place".to_string()),
+                details: Some("Replace with high school name, place, and notes for this period.".to_string()),
+                start_label: Some("Starts high school".to_string()),
+                end_label: Some("Graduates high school".to_string()),
+            },
+            TimelineSourceItem {
+                section: "education".to_string(),
+                title: "College, training, or apprenticeship".to_string(),
+                start: "2008".to_string(),
+                end: Some("2012".to_string()),
+                current: false,
+                place: Some("Replace with program/place".to_string()),
+                details: Some("Replace with education, training, or apprenticeship details.".to_string()),
+                start_label: Some("Starts college/training".to_string()),
+                end_label: Some("Completes college/training".to_string()),
+            },
+            TimelineSourceItem {
+                section: "career".to_string(),
+                title: "Current or long-term work".to_string(),
+                start: "2013".to_string(),
+                end: None,
+                current: true,
+                place: Some("Replace with workplace/place".to_string()),
+                details: Some("Replace with your role, employer, vocation, project, or career milestone. Leave current = true if ongoing.".to_string()),
+                start_label: Some("Starts current work".to_string()),
+                end_label: None,
+            },
+            TimelineSourceItem {
+                section: "relationship".to_string(),
+                title: "Relationship period".to_string(),
+                start: "2017".to_string(),
+                end: None,
+                current: true,
+                place: Some("Replace with place, or remove".to_string()),
+                details: Some("Replace with a relationship period, marriage, partnership, or delete this item if not relevant.".to_string()),
+                start_label: Some("Relationship milestone".to_string()),
+                end_label: None,
+            },
+            TimelineSourceItem {
+                section: "life".to_string(),
+                title: "Your Name lived".to_string(),
+                start: "1990".to_string(),
+                end: None,
+                current: true,
+                place: None,
+                details: Some("Template life interval: birth year/date to present. Add an end date only when modeling a deceased person.".to_string()),
+                start_label: Some("Your Name is born".to_string()),
+                end_label: None,
+            },
+        ],
     }
-    for (parent_id, start_id, end_id) in [
-        (
-            elementary_id,
-            Some(start_elementary_id),
-            Some(finish_elementary_id),
-        ),
-        (
-            high_school_id,
-            Some(start_high_school_id),
-            Some(finish_high_school_id),
-        ),
-        (college_id, Some(start_college_id), Some(finish_college_id)),
-        (job_id, Some(start_job_id), None),
-        (marriage_id, Some(marriage_start_id), Some(death_id)),
-    ] {
-        for relation in boundary_relations_for_composite(parent_id, start_id, end_id) {
-            builder.add_event_relation(relation);
-        }
-    }
-
-    for child_id in [
-        elementary_id,
-        high_school_id,
-        college_id,
-        job_id,
-        marriage_id,
-    ] {
-        builder.add_event_relation(crate::EventRelation::new(
-            life_id,
-            child_id,
-            EventRelationKind::OccursWithin,
-        ));
-    }
-
-    builder.into_pack()
 }
 
 pub fn sample_timeline_packs() -> Vec<EventPack> {
@@ -306,38 +233,6 @@ pub fn sample_timeline_packs() -> Vec<EventPack> {
         sample_history_pack(),
         sample_life_stages_pack(),
     ]
-}
-
-fn boundary_draft(
-    event_type: &str,
-    title: &str,
-    date: &str,
-    person_id: PersonId,
-) -> ManualEventDraft {
-    ManualEventDraft::new(EventTypeId::new(event_type), title)
-        .with_boundary_kind(EventBoundaryKind::StartAndEnd)
-        .with_time(TimeSpec::from_date_value(DateValue::from_original(
-            date,
-            Provenance::default(),
-        )))
-        .with_participant(EventParticipant::new(person_id, "subject"))
-}
-
-fn period_draft(
-    event_type: &str,
-    title: &str,
-    start: &str,
-    end: &str,
-    person_id: PersonId,
-) -> ManualEventDraft {
-    ManualEventDraft::new(EventTypeId::new(event_type), title)
-        .with_composition_kind(EventCompositionKind::Composite)
-        .with_temporal_kind(EventTemporalKind::Interval)
-        .with_time(TimeSpec::Range {
-            start: Some(DateValue::from_original(start, Provenance::default())),
-            end: Some(DateValue::from_original(end, Provenance::default())),
-        })
-        .with_participant(EventParticipant::new(person_id, "subject"))
 }
 
 #[cfg(test)]

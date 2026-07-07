@@ -36,6 +36,7 @@ pub mod store;
 pub mod timeline_document_io;
 pub mod timeline_repository;
 pub mod timeline_repository_async;
+pub mod timeline_source;
 pub mod tree;
 
 pub use archive::*;
@@ -62,4 +63,5 @@ pub use store::*;
 pub use timeline_document_io::*;
 pub use timeline_repository::*;
 pub use timeline_repository_async::*;
+pub use timeline_source::*;
 pub use tree::*;

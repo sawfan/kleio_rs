@@ -83,7 +83,7 @@ impl TimeSpec {
             Self::Date(date) => date.display(),
             Self::Range { start, end } => match (start, end) {
                 (Some(start), Some(end)) => format!("{} to {}", start.display(), end.display()),
-                (Some(start), None) => format!("from {}", start.display()),
+                (Some(start), None) => format!("{} to present", start.display()),
                 (None, Some(end)) => format!("until {}", end.display()),
                 (None, None) => "unknown range".to_string(),
             },
