@@ -117,12 +117,220 @@ pub fn sample_history_pack() -> EventPack {
     builder.into_pack()
 }
 
+pub fn sample_life_stages_pack() -> EventPack {
+    let person_id = PersonId(42);
+    let mut builder = EventPackBuilder::new(
+        PackMetadata::new(PackId::new("sample:life-stages"), "Sample life stages"),
+        PackKind::Biography,
+    );
+    builder.add_domain_profile(genealogy_domain_profile());
+
+    let birth_id = builder.add_manual_event(
+        ManualEventDraft::new(EventTypeId::new("genealogy.birth"), "Alex Morgan is born")
+            .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+            .with_time(TimeSpec::from_date_value(DateValue::from_original(
+                "1990",
+                Provenance::default(),
+            )))
+            .with_participant(EventParticipant::new(person_id, "child")),
+    );
+    let start_elementary_id = builder.add_manual_event(
+        boundary_draft(
+            "education.started_elementary_school",
+            "Starts elementary school",
+            "1996",
+            person_id,
+        )
+        .with_description("Alex starts elementary school."),
+    );
+    let finish_elementary_id = builder.add_manual_event(
+        boundary_draft(
+            "education.finished_elementary_school",
+            "Finishes elementary school",
+            "2002",
+            person_id,
+        )
+        .with_description("Alex finishes elementary school."),
+    );
+    let elementary_id = builder.add_manual_event(
+        period_draft(
+            "education.elementary_school",
+            "Elementary school",
+            "1996",
+            "2002",
+            person_id,
+        )
+        .with_description("Alex attends elementary school."),
+    );
+    let start_high_school_id = builder.add_manual_event(
+        boundary_draft(
+            "education.started_high_school",
+            "Starts high school",
+            "2004",
+            person_id,
+        )
+        .with_description("Alex starts high school."),
+    );
+    let finish_high_school_id = builder.add_manual_event(
+        boundary_draft(
+            "education.finished_high_school",
+            "Graduates high school",
+            "2008",
+            person_id,
+        )
+        .with_description("Alex graduates high school."),
+    );
+    let high_school_id = builder.add_manual_event(
+        period_draft(
+            "education.high_school",
+            "High school",
+            "2004",
+            "2008",
+            person_id,
+        )
+        .with_description("Alex attends high school."),
+    );
+    let start_college_id = builder.add_manual_event(
+        boundary_draft(
+            "education.started_college",
+            "Starts college",
+            "2008",
+            person_id,
+        )
+        .with_description("Alex starts college."),
+    );
+    let finish_college_id = builder.add_manual_event(
+        boundary_draft(
+            "education.finished_college",
+            "Graduates college",
+            "2012",
+            person_id,
+        )
+        .with_description("Alex graduates college."),
+    );
+    let college_id = builder.add_manual_event(
+        period_draft("education.college", "College", "2008", "2012", person_id)
+            .with_description("Alex attends college."),
+    );
+    let start_job_id = builder.add_manual_event(
+        boundary_draft("career.started_job", "Starts first job", "2013", person_id)
+            .with_description("Alex starts a long-term career position."),
+    );
+    let job_id = builder.add_manual_event(
+        period_draft(
+            "career.job",
+            "First long-term job",
+            "2013",
+            "2055",
+            person_id,
+        )
+        .with_description("Alex starts and maintains a long-term career position."),
+    );
+    let marriage_start_id = builder.add_manual_event(
+        boundary_draft("genealogy.marriage", "Gets married", "2017", person_id)
+            .with_description("Alex gets married."),
+    );
+    let marriage_id = builder.add_manual_event(
+        period_draft("genealogy.marriage", "Marriage", "2017", "2068", person_id)
+            .with_description("Alex's marriage period."),
+    );
+    let death_id = builder.add_manual_event(
+        ManualEventDraft::new(EventTypeId::new("genealogy.death"), "Alex Morgan dies")
+            .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+            .with_time(TimeSpec::from_date_value(DateValue::from_original(
+                "2068",
+                Provenance::default(),
+            )))
+            .with_participant(EventParticipant::new(person_id, "deceased")),
+    );
+    let life_id = builder.add_manual_event(
+        ManualEventDraft::new(EventTypeId::new("genealogy.life"), "Alex Morgan lived")
+            .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+            .with_time(TimeSpec::Range {
+                start: Some(DateValue::from_original("1990", Provenance::default())),
+                end: Some(DateValue::from_original("2068", Provenance::default())),
+            })
+            .with_participant(EventParticipant::new(person_id, "subject")),
+    );
+
+    for relation in boundary_relations_for_composite(life_id, Some(birth_id), Some(death_id)) {
+        builder.add_event_relation(relation);
+    }
+    for (parent_id, start_id, end_id) in [
+        (
+            elementary_id,
+            Some(start_elementary_id),
+            Some(finish_elementary_id),
+        ),
+        (
+            high_school_id,
+            Some(start_high_school_id),
+            Some(finish_high_school_id),
+        ),
+        (college_id, Some(start_college_id), Some(finish_college_id)),
+        (job_id, Some(start_job_id), None),
+        (marriage_id, Some(marriage_start_id), Some(death_id)),
+    ] {
+        for relation in boundary_relations_for_composite(parent_id, start_id, end_id) {
+            builder.add_event_relation(relation);
+        }
+    }
+
+    for child_id in [
+        elementary_id,
+        high_school_id,
+        college_id,
+        job_id,
+        marriage_id,
+    ] {
+        builder.add_event_relation(crate::EventRelation::new(
+            life_id,
+            child_id,
+            EventRelationKind::OccursWithin,
+        ));
+    }
+
+    builder.into_pack()
+}
+
 pub fn sample_timeline_packs() -> Vec<EventPack> {
     vec![
         sample_journal_pack(),
         sample_biography_pack(),
         sample_history_pack(),
+        sample_life_stages_pack(),
     ]
+}
+
+fn boundary_draft(
+    event_type: &str,
+    title: &str,
+    date: &str,
+    person_id: PersonId,
+) -> ManualEventDraft {
+    ManualEventDraft::new(EventTypeId::new(event_type), title)
+        .with_scale_kinds([EventScaleKind::Atomic, EventScaleKind::Boundary])
+        .with_time(TimeSpec::from_date_value(DateValue::from_original(
+            date,
+            Provenance::default(),
+        )))
+        .with_participant(EventParticipant::new(person_id, "subject"))
+}
+
+fn period_draft(
+    event_type: &str,
+    title: &str,
+    start: &str,
+    end: &str,
+    person_id: PersonId,
+) -> ManualEventDraft {
+    ManualEventDraft::new(EventTypeId::new(event_type), title)
+        .with_scale_kinds([EventScaleKind::Composite, EventScaleKind::Interval])
+        .with_time(TimeSpec::Range {
+            start: Some(DateValue::from_original(start, Provenance::default())),
+            end: Some(DateValue::from_original(end, Provenance::default())),
+        })
+        .with_participant(EventParticipant::new(person_id, "subject"))
 }
 
 #[cfg(test)]
@@ -166,12 +374,13 @@ mod tests {
             document.add_pack(pack, true);
         }
 
-        assert_eq!(document.active_packs().count(), 3);
+        assert_eq!(document.active_packs().count(), 4);
         assert!(
             !document
                 .active_events_in_year_span(YearSpan::exact(1942))
                 .is_empty()
         );
         assert!(!document.active_events_for_entity(PersonId(1)).is_empty());
+        assert!(!document.active_events_for_entity(PersonId(42)).is_empty());
     }
 }
