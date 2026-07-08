@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::attribution::Provenance;
+use crate::attribution::{Attribute, Provenance};
 use crate::event::{
     EventBoundaryKind, EventCompositionKind, EventParticipant, EventRelation, EventRelationKind,
     EventTemporalKind, TimeSpec, TimelineEvent,
@@ -129,6 +129,14 @@ pub struct TimelineSourceItem {
     #[serde(default)]
     pub current: bool,
     pub place: Option<String>,
+    #[serde(default)]
+    pub place_lat: Option<String>,
+    #[serde(default)]
+    pub place_lon: Option<String>,
+    #[serde(default)]
+    pub place_timezone: Option<String>,
+    #[serde(default)]
+    pub place_geoname_id: Option<String>,
     pub details: Option<String>,
     pub start_label: Option<String>,
     pub end_label: Option<String>,
@@ -147,6 +155,10 @@ impl TimelineSourceItem {
             end: None,
             current: false,
             place: None,
+            place_lat: None,
+            place_lon: None,
+            place_timezone: None,
+            place_geoname_id: None,
             details: None,
             start_label: None,
             end_label: None,
@@ -166,6 +178,10 @@ impl TimelineSourceItem {
             end: Some(end.into()),
             current: false,
             place: None,
+            place_lat: None,
+            place_lon: None,
+            place_timezone: None,
+            place_geoname_id: None,
             details: None,
             start_label: None,
             end_label: None,
@@ -184,6 +200,10 @@ impl TimelineSourceItem {
             end: None,
             current: true,
             place: None,
+            place_lat: None,
+            place_lon: None,
+            place_timezone: None,
+            place_geoname_id: None,
             details: None,
             start_label: None,
             end_label: None,
@@ -432,9 +452,13 @@ fn source_item_event_draft(
             .with_temporal_kind(EventTemporalKind::Instant)
     };
 
-    let description = source_description(item.place.as_deref(), item.details.as_deref());
+    let place_meta = SourcePlaceFields::from_item(item);
+    let description = source_description(&place_meta, item.details.as_deref());
     if !description.is_empty() {
         draft = draft.with_description(description);
+    }
+    for attribute in place_meta.provenance_attributes() {
+        draft.provenance.attributes.push(attribute);
     }
 
     draft
@@ -543,13 +567,18 @@ fn source_item_from_event(
 ) -> Option<TimelineSourceItem> {
     let (start, end, current) = source_time_fields(&event.time, event.is_interval())?;
     let (place, details) = split_source_description(event.description.as_deref());
+    let place_meta = source_place_from_provenance(&event.provenance);
     Some(TimelineSourceItem {
         section: source_section_label(event.type_ref.as_str()).to_string(),
         title: event.title.clone(),
         start,
         end,
         current,
-        place,
+        place: place_meta.label.or(place),
+        place_lat: place_meta.lat,
+        place_lon: place_meta.lon,
+        place_timezone: place_meta.timezone,
+        place_geoname_id: place_meta.geoname_id,
         details,
         start_label: boundary_labels.and_then(|labels| labels.start.clone()),
         end_label: boundary_labels.and_then(|labels| labels.end.clone()),
@@ -562,9 +591,12 @@ fn source_time_fields(
 ) -> Option<(String, Option<String>, bool)> {
     match time {
         TimeSpec::Unknown => None,
-        TimeSpec::Date(date) | TimeSpec::Approximate { value: date, .. } => {
-            Some((date.display(), None, false))
-        }
+        TimeSpec::Date(date) => Some((date.display(), None, false)),
+        TimeSpec::Approximate { value, qualifier } => Some((
+            format!("{} {}", qualifier.label(), value.display()),
+            None,
+            false,
+        )),
         TimeSpec::Range { start, end } => {
             let start = start.as_ref()?.display();
             Some((
@@ -573,8 +605,13 @@ fn source_time_fields(
                 is_interval && end.is_none(),
             ))
         }
-        TimeSpec::Before(date) | TimeSpec::After(date) => Some((date.display(), None, false)),
-        TimeSpec::Between { start, end } => Some((start.display(), Some(end.display()), false)),
+        TimeSpec::Before(date) => Some((format!("before {}", date.display()), None, false)),
+        TimeSpec::After(date) => Some((format!("after {}", date.display()), None, false)),
+        TimeSpec::Between { start, end } => Some((
+            format!("between {} and {}", start.display(), end.display()),
+            None,
+            false,
+        )),
         TimeSpec::OriginalOnly { original } => Some((original.clone(), None, false)),
     }
 }
@@ -603,14 +640,108 @@ fn source_section_label(type_ref: &str) -> &'static str {
     }
 }
 
-fn source_description(place: Option<&str>, details: Option<&str>) -> String {
-    let place = place.unwrap_or_default().trim();
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SourcePlaceFields {
+    label: Option<String>,
+    lat: Option<String>,
+    lon: Option<String>,
+    timezone: Option<String>,
+    geoname_id: Option<String>,
+}
+
+impl SourcePlaceFields {
+    fn from_item(item: &TimelineSourceItem) -> Self {
+        Self {
+            label: clean_optional(item.place.clone()),
+            lat: clean_optional(item.place_lat.clone()),
+            lon: clean_optional(item.place_lon.clone()),
+            timezone: clean_optional(item.place_timezone.clone()),
+            geoname_id: clean_optional(item.place_geoname_id.clone()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.label.is_none()
+            && self.lat.is_none()
+            && self.lon.is_none()
+            && self.timezone.is_none()
+            && self.geoname_id.is_none()
+    }
+
+    fn display_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(label) = self.label.as_deref() {
+            lines.push(format!("Place: {label}"));
+        }
+        if self.lat.is_some() || self.lon.is_some() {
+            lines.push(format!(
+                "Coordinates: {}, {}",
+                self.lat.as_deref().unwrap_or_default(),
+                self.lon.as_deref().unwrap_or_default()
+            ));
+        }
+        if let Some(timezone) = self.timezone.as_deref() {
+            lines.push(format!("Timezone: {timezone}"));
+        }
+        lines
+    }
+
+    fn provenance_attributes(&self) -> Vec<Attribute> {
+        let mut attributes = Vec::new();
+        push_place_attribute(&mut attributes, "place.label", self.label.as_deref());
+        push_place_attribute(&mut attributes, "place.lat", self.lat.as_deref());
+        push_place_attribute(&mut attributes, "place.lon", self.lon.as_deref());
+        push_place_attribute(&mut attributes, "place.timezone", self.timezone.as_deref());
+        push_place_attribute(
+            &mut attributes,
+            "place.geoname_id",
+            self.geoname_id.as_deref(),
+        );
+        attributes
+    }
+}
+
+fn source_place_from_provenance(provenance: &Provenance) -> SourcePlaceFields {
+    SourcePlaceFields {
+        label: clean_optional(provenance_attribute_value(provenance, "place.label")),
+        lat: clean_optional(provenance_attribute_value(provenance, "place.lat")),
+        lon: clean_optional(provenance_attribute_value(provenance, "place.lon")),
+        timezone: clean_optional(provenance_attribute_value(provenance, "place.timezone")),
+        geoname_id: clean_optional(provenance_attribute_value(provenance, "place.geoname_id")),
+    }
+}
+
+fn push_place_attribute(attributes: &mut Vec<Attribute>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        attributes.push(Attribute {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
+}
+
+fn provenance_attribute_value(provenance: &Provenance, key: &str) -> Option<String> {
+    provenance
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.clone())
+}
+
+fn clean_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn source_description(place: &SourcePlaceFields, details: Option<&str>) -> String {
     let details = details.unwrap_or_default().trim();
+    let place_text = place.display_lines().join("\n");
     match (place.is_empty(), details.is_empty()) {
         (true, true) => String::new(),
-        (false, true) => format!("Place: {place}"),
+        (false, true) => place_text,
         (true, false) => details.to_string(),
-        (false, false) => format!("Place: {place}\n\n{details}"),
+        (false, false) => format!("{place_text}\n\n{details}"),
     }
 }
 
@@ -618,16 +749,32 @@ fn split_source_description(description: Option<&str>) -> (Option<String>, Optio
     let Some(description) = description else {
         return (None, None);
     };
-    if let Some(rest) = description.strip_prefix("Place: ") {
-        let (place, details) = rest
-            .split_once("\n\n")
-            .map(|(place, details)| (place.to_string(), details.to_string()))
-            .unwrap_or_else(|| (rest.to_string(), String::new()));
-        return (
-            (!place.trim().is_empty()).then_some(place),
-            (!details.trim().is_empty()).then_some(details),
-        );
+    let mut lines = description.lines().peekable();
+    let mut place = None;
+    let mut stripped_structured_place = false;
+
+    while let Some(line) = lines.peek().copied() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Place:") {
+            place = clean_optional(Some(value.to_string()));
+            stripped_structured_place = true;
+            lines.next();
+        } else if trimmed.starts_with("Coordinates:") || trimmed.starts_with("Timezone:") {
+            stripped_structured_place = true;
+            lines.next();
+        } else if stripped_structured_place && trimmed.is_empty() {
+            lines.next();
+            break;
+        } else {
+            break;
+        }
     }
+
+    if stripped_structured_place {
+        let details = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+        return (place, (!details.is_empty()).then_some(details));
+    }
+
     (
         None,
         (!description.trim().is_empty()).then_some(description.to_string()),
@@ -747,28 +894,82 @@ mod tests {
     }
 
     #[test]
-    fn event_pack_can_export_to_timeline_source() {
+    fn uncertain_time_specs_export_to_editable_source_text() {
         let source = TimelineSource {
             meta: TimelineSourceMeta {
-                id: Some("local:mine".to_string()),
-                title: "My Life".to_string(),
+                id: Some("local:uncertain".to_string()),
+                title: "Uncertain".to_string(),
                 kind: Some(TimelineSourcePackKind::Biography),
                 description: None,
                 subject: None,
                 person_id: Some(7),
             },
-            items: vec![TimelineSourceItem::period(
-                "education",
-                "High school",
-                "2004",
-                "2008",
-            )],
+            items: vec![
+                TimelineSourceItem::event("event", "Circa", "circa 1991"),
+                TimelineSourceItem::event("event", "Before", "before 1900"),
+                TimelineSourceItem::event("event", "Between", "between 1900 and 1910"),
+            ],
         };
+
         let pack = event_pack_from_timeline_source(&source);
         let exported = timeline_source_from_event_pack(&pack);
+        let starts: BTreeSet<&str> = exported
+            .items
+            .iter()
+            .map(|item| item.start.as_str())
+            .collect();
 
-        assert_eq!(exported.meta.title, "My Life");
-        assert_eq!(exported.items.len(), 1);
-        assert_eq!(exported.items[0].title, "High school");
+        assert!(starts.contains("circa 1991"));
+        assert!(starts.contains("before 1900"));
+        assert!(starts.contains("between 1900 and 1910"));
+    }
+
+    #[test]
+    fn structured_place_fields_round_trip_through_event_pack() {
+        let mut item = TimelineSourceItem::event("birth", "I was born", "1990-04-05 07:18");
+        item.place = Some("Example Hospital".to_string());
+        item.place_lat = Some("47.600000".to_string());
+        item.place_lon = Some("-122.300000".to_string());
+        item.place_timezone = Some("America/Los_Angeles".to_string());
+        item.place_geoname_id = Some("5809844".to_string());
+        item.details = Some("Family note".to_string());
+
+        let source = TimelineSource {
+            meta: TimelineSourceMeta {
+                id: Some("local:places".to_string()),
+                title: "Places".to_string(),
+                kind: Some(TimelineSourcePackKind::Biography),
+                description: None,
+                subject: None,
+                person_id: Some(7),
+            },
+            items: vec![item],
+        };
+
+        let pack = event_pack_from_timeline_source(&source);
+        let event = pack
+            .events
+            .iter()
+            .find(|event| event.title == "I was born")
+            .expect("compiled event");
+        assert!(
+            event
+                .provenance
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == "place.lat" && attribute.value == "47.600000")
+        );
+
+        let exported = timeline_source_from_event_pack(&pack);
+        let exported_item = &exported.items[0];
+        assert_eq!(exported_item.place.as_deref(), Some("Example Hospital"));
+        assert_eq!(exported_item.place_lat.as_deref(), Some("47.600000"));
+        assert_eq!(exported_item.place_lon.as_deref(), Some("-122.300000"));
+        assert_eq!(
+            exported_item.place_timezone.as_deref(),
+            Some("America/Los_Angeles")
+        );
+        assert_eq!(exported_item.place_geoname_id.as_deref(), Some("5809844"));
+        assert_eq!(exported_item.details.as_deref(), Some("Family note"));
     }
 }
