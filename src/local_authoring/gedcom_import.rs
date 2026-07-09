@@ -21,12 +21,12 @@ impl Default for PrimaryGedcomImportOptions {
 }
 
 pub fn set_primary_gedcom_import(
-    root: impl AsRef<Path>,
+    world_root: impl AsRef<Path>,
     options: &PrimaryGedcomImportOptions,
 ) -> Result<(), LocalAuthoringError> {
-    let root = root.as_ref();
-    let config_path = root.join("kleio.toml");
-    let normalized_path = normalize_import_path(root, &options.path)?;
+    let world_root = world_root.as_ref();
+    let config_path = world_root.join("world.toml");
+    let normalized_path = normalize_import_path(world_root, &options.path)?;
 
     if options.strategy.trim().is_empty() {
         return Err(LocalAuthoringError::Validation {
@@ -34,7 +34,7 @@ pub fn set_primary_gedcom_import(
         });
     }
 
-    if !options.allow_missing && !root.join(&normalized_path).exists() {
+    if !options.allow_missing && !world_root.join(&normalized_path).exists() {
         return Err(LocalAuthoringError::Validation {
             message: format!(
                 "GEDCOM import `{}` does not exist; pass --allow-missing to link it anyway",
@@ -91,7 +91,7 @@ fn normalize_import_path(root: &Path, path: &str) -> Result<PathBuf, LocalAuthor
         path.strip_prefix(root)
             .map_err(|_| LocalAuthoringError::Validation {
                 message: format!(
-                    "absolute GEDCOM path `{}` is not under local data root `{}`",
+                    "absolute GEDCOM path `{}` is not under world root `{}`",
                     path.display(),
                     root.display()
                 ),
@@ -108,7 +108,7 @@ fn normalize_import_path(root: &Path, path: &str) -> Result<PathBuf, LocalAuthor
     }) {
         return Err(LocalAuthoringError::Validation {
             message: format!(
-                "GEDCOM import path `{}` must stay inside the local data root",
+                "GEDCOM import path `{}` must stay inside the world root",
                 relative.display()
             ),
         });
@@ -151,10 +151,10 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::local_authoring::{LocalSkeletonOptions, create_local_skeleton};
+    use crate::local_authoring::{LocalSkeletonOptions, create_workspace_skeleton};
 
     #[test]
-    fn links_primary_gedcom_in_project_config() {
+    fn links_primary_gedcom_in_world_config() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-gedcom-link-{}-{}",
             std::process::id(),
@@ -163,15 +163,16 @@ mod tests {
                 .expect("system time")
                 .as_nanos()
         ));
-        create_local_skeleton(&temp_dir, &LocalSkeletonOptions::default()).expect("skeleton");
+        create_workspace_skeleton(&temp_dir, &LocalSkeletonOptions::default()).expect("skeleton");
+        let world_root = temp_dir.join("worlds/default");
         fs::write(
-            temp_dir.join("imports/gedcom/family.ged"),
+            world_root.join("imports/gedcom/family.ged"),
             "0 HEAD\n0 TRLR\n",
         )
         .expect("gedcom");
 
         set_primary_gedcom_import(
-            &temp_dir,
+            &world_root,
             &PrimaryGedcomImportOptions {
                 path: "imports/gedcom/family.ged".to_string(),
                 strategy: "link".to_string(),
@@ -180,7 +181,7 @@ mod tests {
         )
         .expect("set primary gedcom");
 
-        let updated = fs::read_to_string(temp_dir.join("kleio.toml")).expect("config");
+        let updated = fs::read_to_string(world_root.join("world.toml")).expect("config");
         assert!(updated.contains("path = \"imports/gedcom/family.ged\""));
         assert!(updated.contains("strategy = \"link\""));
 

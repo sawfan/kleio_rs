@@ -10,19 +10,34 @@ use super::{LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, LocalToml
 pub(super) fn tree_from_local_data_bundle(
     bundle: &LocalDataBundle,
 ) -> Result<TreeDocument, LocalAuthoringError> {
-    let registry = bundle
-        .toml_documents
-        .iter()
-        .find(|document| document.kind.as_deref() == Some("registry"));
-    let tree_id = registry
-        .and_then(|document| document.data.get("tree"))
-        .and_then(|tree| tree.get("id"))
-        .and_then(serde_json::Value::as_str)
+    tree_from_local_data_bundle_with_view(bundle, None)
+}
+
+pub(super) fn tree_from_local_data_bundle_with_view(
+    bundle: &LocalDataBundle,
+    view_slug: Option<&str>,
+) -> Result<TreeDocument, LocalAuthoringError> {
+    let registry = bundle.toml_documents.iter().find(|document| {
+        document.kind.as_deref() == Some("registry") || document.path == "world.toml"
+    });
+    let tree_view = select_tree_view(&bundle.toml_documents, view_slug);
+    let tree_id = tree_view
+        .and_then(|document| document.id.as_deref())
+        .or_else(|| {
+            registry
+                .and_then(|document| document.data.get("tree"))
+                .and_then(|tree| tree.get("id"))
+                .and_then(serde_json::Value::as_str)
+        })
         .unwrap_or("local-tree");
-    let tree_title = registry
-        .and_then(|document| document.data.get("tree"))
-        .and_then(|tree| tree.get("title"))
-        .and_then(serde_json::Value::as_str)
+    let tree_title = tree_view
+        .and_then(|document| document.title.as_deref())
+        .or_else(|| {
+            registry
+                .and_then(|document| document.data.get("tree"))
+                .and_then(|tree| tree.get("title"))
+                .and_then(serde_json::Value::as_str)
+        })
         .or_else(|| registry.and_then(|document| document.title.as_deref()))
         .unwrap_or("Local private tree");
 
@@ -41,7 +56,7 @@ pub(super) fn tree_from_local_data_bundle(
     {
         let person_id = tree.next_person_id();
         person_ids.insert(record.id.clone(), person_id);
-        let display = record.title.clone().unwrap_or_else(|| record.id.clone());
+        let display = markdown_title(record).unwrap_or_else(|| record.id.clone());
         let sex = record
             .attributes
             .get("sex")
@@ -53,16 +68,8 @@ pub(super) fn tree_from_local_data_bundle(
             id: person_id,
             names: vec![Name {
                 display,
-                given: record
-                    .attributes
-                    .get("given")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                surname: record
-                    .attributes
-                    .get("surname")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
+                given: markdown_given(record),
+                surname: markdown_surname(record),
                 aliases: string_array_attribute(record.attributes.get("aliases")),
                 provenance: local_record_provenance(record),
             }],
@@ -114,9 +121,18 @@ pub(super) fn tree_from_local_data_bundle(
         let event = Event {
             id: event_id,
             kind: event_kind_from_local_kind(&record.kind),
-            date: record.date.as_ref().map(|date| {
-                DateValue::from_original(date.clone(), local_record_provenance(record))
-            }),
+            date: record
+                .date
+                .as_ref()
+                .or_else(|| {
+                    record
+                        .attributes
+                        .get("time")
+                        .and_then(toml_json_value_as_string_ref)
+                })
+                .map(|date| {
+                    DateValue::from_original(date.clone(), local_record_provenance(record))
+                }),
             time: record
                 .attributes
                 .get("time")
@@ -126,7 +142,7 @@ pub(super) fn tree_from_local_data_bundle(
                 .get("time_zone")
                 .and_then(toml_json_value_as_string),
             place: None,
-            description: record.title.clone().or_else(|| record.summary.clone()),
+            description: markdown_title(record).or_else(|| record.summary.clone()),
             participants: participants.clone(),
             provenance,
         };
@@ -198,17 +214,98 @@ pub(super) fn tree_from_local_data_bundle(
         }
     }
 
-    if let Some(main_person) = registry
-        .and_then(|document| document.data.get("tree"))
-        .and_then(|tree| tree.get("main_person"))
+    if let Some(main_person) = tree_view
+        .and_then(|document| document.data.get("root"))
+        .and_then(|root| root.get("entity"))
         .and_then(serde_json::Value::as_str)
         .and_then(|id| person_ids.get(id).copied())
+        .or_else(|| {
+            registry
+                .and_then(|document| document.data.get("tree"))
+                .and_then(|tree| tree.get("main_person"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| person_ids.get(id).copied())
+        })
         .or_else(|| tree.people.first().map(|person| person.id))
     {
         tree.main_person = Some(main_person);
     }
 
     Ok(tree)
+}
+
+fn select_tree_view<'a>(
+    documents: &'a [LocalTomlDocument],
+    view_slug: Option<&str>,
+) -> Option<&'a LocalTomlDocument> {
+    let trees = documents
+        .iter()
+        .filter(|document| document.kind.as_deref() == Some("tree-view"));
+
+    if let Some(view_slug) = view_slug {
+        let view_id = format!("tree:{view_slug}");
+        return trees.into_iter().find(|document| {
+            document.id.as_deref() == Some(view_id.as_str())
+                || document.path == format!("views/trees/{view_slug}.toml")
+        });
+    }
+
+    trees.into_iter().next()
+}
+
+fn markdown_title(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .title
+        .clone()
+        .or_else(|| {
+            record
+                .attributes
+                .get("primary_name")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            record
+                .attributes
+                .get("names")
+                .and_then(|names| names.get("primary"))
+                .and_then(|primary| primary.get("full"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn markdown_given(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .attributes
+        .get("given")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            record
+                .attributes
+                .get("names")
+                .and_then(|names| names.get("primary"))
+                .and_then(|primary| primary.get("given"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(ToOwned::to_owned)
+}
+
+fn markdown_surname(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .attributes
+        .get("surname")
+        .or_else(|| record.attributes.get("family"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            record
+                .attributes
+                .get("names")
+                .and_then(|names| names.get("primary"))
+                .and_then(|primary| primary.get("family"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(ToOwned::to_owned)
 }
 
 fn is_timeline_event_record(record: &LocalMarkdownRecord) -> bool {
@@ -351,6 +448,14 @@ fn next_event_id(tree: &TreeDocument) -> EventId {
             .unwrap_or(0)
             + 1,
     )
+}
+
+fn toml_json_value_as_string_ref(value: &serde_json::Value) -> Option<&String> {
+    value.as_str()?;
+    match value {
+        serde_json::Value::String(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn toml_json_value_as_string(value: &serde_json::Value) -> Option<String> {

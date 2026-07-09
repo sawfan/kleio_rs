@@ -166,6 +166,50 @@ fn writes_private_tree_json() {
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
+#[test]
+fn rejects_missing_event_assertion_reference() {
+    let temp_dir = test_temp_dir("missing-assertion");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("entities/people/person-alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Note\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"birth\"\nparticipants = [{ entity = \"person:alex-example\", role = \"subject\" }]\nassertions = [\"assertion:missing\"]\n+++\n\n# Note\n",
+    )
+    .expect("event");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing assertion should fail");
+    assert!(
+        err.to_string().contains("assertion:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_missing_assertion_subject_reference() {
+    let temp_dir = test_temp_dir("missing-assertion-subject");
+    fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
+    fs::write(
+        temp_dir.join("assertions/example-claim.md"),
+        "+++\nid = \"assertion:example-claim\"\nkind = \"identity\"\nsubject = \"person:missing\"\npredicate = \"has_name\"\nvalue = \"Missing Example\"\n+++\n\n# Note\n",
+    )
+    .expect("assertion");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing subject should fail");
+    assert!(
+        err.to_string().contains("person:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
 fn test_temp_dir(label: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

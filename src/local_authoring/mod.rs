@@ -1,14 +1,14 @@
 //! Local private data authoring helpers.
 //!
 //! This module supports a deliberately small authoring format for private
-//! Kleio data under the repository's ignored `local-data/` directory:
+//! Kleio data in a user-chosen data root. `kleio-cli` defaults to the standard
+//! XDG data location (`$XDG_DATA_HOME/kleio`, usually `~/.local/share/kleio`),
+//! while tests and local development can pass an explicit scratch directory:
 //! - Markdown records with TOML frontmatter, for human-authored notes/narrative.
 //! - Plain TOML documents, for config, vocabularies, registries, and other
 //!   structured data.
-//! - Deterministic generated JSON files that can stay private under
-//!   `local-data/kleio/build/`.
-//! - Raw import artifacts, such as versioned GEDCOM files, under
-//!   `local-data/kleio/imports/`.
+//! - Deterministic generated JSON files under `build/`.
+//! - Raw import artifacts, such as versioned GEDCOM files, under `imports/`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -19,18 +19,61 @@ use std::path::{Path, PathBuf};
 
 use crate::TreeDocument;
 
+mod build;
+mod config;
+mod ecs_compile;
 mod gedcom_import;
+mod imports;
+mod paths;
+mod records;
+mod schema;
 mod skeleton;
+mod timeline_compile;
 mod tree_compile;
+mod validation;
+mod views;
 
+pub use build::{
+    LocalWorldBuildOptions, LocalWorldBuildOutput, build_local_world,
+    build_local_world_with_options,
+};
+pub use config::{
+    GedcomImportConfig, GedcomImportsConfig, WorkspaceConfig, WorkspaceInfo, WorkspaceWorldEntry,
+    WorldBuildConfig, WorldBuildPaths, WorldConfig, WorldImportsConfig, read_workspace_config,
+    read_world_config, resolve_workspace_world_root, resolve_world_build_paths,
+    write_workspace_config,
+};
+pub use ecs_compile::{
+    LocalEcsBundle, LocalEcsEntity, LocalEcsResources, LocalEcsViews, compile_local_ecs,
+    write_local_ecs_json,
+};
 pub use gedcom_import::{PrimaryGedcomImportOptions, set_primary_gedcom_import};
+pub use imports::{LocalImportKind, LocalImportReportOptions, create_local_import_report};
+pub use paths::{
+    DEFAULT_WORLD_SLUG, WORKSPACE_CONFIG_FILE, WORLD_CONFIG_FILE, WorkspacePaths, WorldPaths,
+};
+pub use records::{
+    LocalAssertionOptions, LocalEntityKind, LocalEntityOptions, LocalEventOptions,
+    LocalSourceOptions, create_local_assertion, create_local_entity, create_local_event,
+    create_local_source,
+};
+pub use schema::{LocalSchemaKind, LocalSchemaOptions, create_local_schema};
 
 pub use skeleton::{
     LocalBirthEventOptions, LocalPersonOptions, LocalSkeletonOptions, create_local_birth_event,
-    create_local_person, create_local_skeleton,
+    create_local_person, create_local_skeleton, create_workspace_skeleton, create_world_layout,
+    create_world_skeleton,
+};
+pub use timeline_compile::{
+    LocalTimelineEvent, LocalTimelineProjection, LocalTimelineViewSummary, compile_local_timeline,
+    write_local_timeline_json,
+};
+pub use validation::{LocalWorldValidationReport, validate_local_world};
+pub use views::{
+    LocalViewKind, LocalViewOptions, LocalViewSummary, create_local_view, list_local_views,
 };
 
-use tree_compile::tree_from_local_data_bundle;
+use tree_compile::{tree_from_local_data_bundle, tree_from_local_data_bundle_with_view};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalDataBundle {
@@ -236,6 +279,40 @@ pub fn write_local_tree_json(
     Ok(tree)
 }
 
+pub fn compile_local_tree_with_view(
+    source_root: impl AsRef<Path>,
+    view_slug: Option<&str>,
+) -> Result<TreeDocument, LocalAuthoringError> {
+    tree_from_local_data_bundle_with_view(&compile_local_data(source_root)?, view_slug)
+}
+
+pub fn write_local_tree_json_with_view(
+    source_root: impl AsRef<Path>,
+    view_slug: Option<&str>,
+    output_path: impl AsRef<Path>,
+) -> Result<TreeDocument, LocalAuthoringError> {
+    let output_path = output_path.as_ref();
+    let tree = compile_local_tree_with_view(source_root, view_slug)?;
+    let json = serde_json::to_string_pretty(&tree).map_err(|source| LocalAuthoringError::Json {
+        path: output_path.to_path_buf(),
+        source,
+    })?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| LocalAuthoringError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    fs::write(output_path, format!("{json}\n")).map_err(|source| LocalAuthoringError::Io {
+        path: output_path.to_path_buf(),
+        source,
+    })?;
+
+    Ok(tree)
+}
+
 pub fn compile_local_trees_document(
     source_root: impl AsRef<Path>,
 ) -> Result<LocalTreesDocument, LocalAuthoringError> {
@@ -290,7 +367,7 @@ fn collect_local_data_files(
             .and_then(|name| name.to_str())
             .unwrap_or_default();
 
-        if file_name.starts_with('.') || matches!(file_name, "build" | "compiled" | "README.md") {
+        if matches!(file_name, "README.md") {
             continue;
         }
 
@@ -300,6 +377,12 @@ fn collect_local_data_files(
                 path: path.clone(),
                 source,
             })?;
+
+        if file_name.starts_with('.')
+            || (file_type.is_dir() && matches!(file_name, "build" | "compiled"))
+        {
+            continue;
+        }
 
         if file_type.is_dir() {
             collect_local_data_files(source_root, &path, files)?;
@@ -560,38 +643,109 @@ fn validate_local_data(
         }
 
         if let Some(participants) = record.attributes.get("participants") {
-            validate_participant_references(record, participants, &ids)?;
+            validate_entity_reference_items(record, participants, &ids, "participants")?;
+        }
+
+        if let Some(places) = record.attributes.get("places") {
+            validate_entity_reference_items(record, places, &ids, "places")?;
+        }
+
+        if let Some(assertions) = record.attributes.get("assertions") {
+            validate_id_references(record, assertions, &ids, "assertions")?;
+        }
+
+        if let Some(sources) = record.attributes.get("sources") {
+            validate_id_references(record, sources, &ids, "sources")?;
+        }
+
+        if record.path.starts_with("assertions/") {
+            validate_assertion_record(record, &ids)?;
         }
     }
 
     Ok(())
 }
 
-fn validate_participant_references(
+fn validate_entity_reference_items(
     record: &LocalMarkdownRecord,
-    participants: &serde_json::Value,
+    items: &serde_json::Value,
     ids: &BTreeSet<String>,
+    field: &str,
 ) -> Result<(), LocalAuthoringError> {
-    let Some(items) = participants.as_array() else {
+    let Some(items) = items.as_array() else {
         return Err(LocalAuthoringError::Validation {
-            message: format!("{} `participants` must be an array", record.path),
+            message: format!("{} `{field}` must be an array", record.path),
         });
     };
 
     for item in items {
         let Some(entity_id) = item.get("entity").and_then(serde_json::Value::as_str) else {
             return Err(LocalAuthoringError::Validation {
-                message: format!("{} participant missing `entity`", record.path),
+                message: format!("{} {field} item missing `entity`", record.path),
             });
         };
         if !ids.contains(entity_id) {
             return Err(LocalAuthoringError::Validation {
                 message: format!(
-                    "{} references missing participant `{entity_id}`",
+                    "{} references missing {field} entity `{entity_id}`",
                     record.path
                 ),
             });
         }
+    }
+
+    Ok(())
+}
+
+fn validate_id_references(
+    record: &LocalMarkdownRecord,
+    values: &serde_json::Value,
+    ids: &BTreeSet<String>,
+    field: &str,
+) -> Result<(), LocalAuthoringError> {
+    let Some(values) = values.as_array() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} `{field}` must be an array", record.path),
+        });
+    };
+
+    for value in values {
+        let Some(id) = value.as_str() else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} `{field}` must contain only strings", record.path),
+            });
+        };
+        if !ids.contains(id) {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} references missing {field} id `{id}`", record.path),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_assertion_record(
+    record: &LocalMarkdownRecord,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(subject) = record
+        .attributes
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} assertion missing `subject`", record.path),
+        });
+    };
+
+    if !ids.contains(subject) {
+        return Err(LocalAuthoringError::Validation {
+            message: format!(
+                "{} references missing assertion subject `{subject}`",
+                record.path
+            ),
+        });
     }
 
     Ok(())

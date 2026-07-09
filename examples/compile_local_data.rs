@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use kleio::{DEFAULT_WORLD_SLUG, LocalSkeletonOptions, WorkspacePaths, create_workspace_skeleton};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputKind {
@@ -36,13 +38,17 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let source_root = positional
+    let workspace_root = positional
         .first()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("local-data"));
+        .unwrap_or_else(default_data_root);
+    let source_root = WorkspacePaths::new(&workspace_root)
+        .world(DEFAULT_WORLD_SLUG)
+        .root()
+        .to_path_buf();
 
     if init_example {
-        return init_example_local_data(source_root);
+        return init_example_local_data(workspace_root);
     }
 
     let output_path = positional
@@ -66,10 +72,26 @@ fn main() -> ExitCode {
 
 fn default_output_path(source_root: &std::path::Path, output_kind: OutputKind) -> PathBuf {
     match output_kind {
-        OutputKind::Bundle => source_root.join("compiled/kleio-local-data.json"),
-        OutputKind::Tree => source_root.join("compiled/kleio-tree.json"),
-        OutputKind::TreesDocument => source_root.join("compiled/ourania-trees-document.json"),
+        OutputKind::Bundle => source_root.join("build/kleio.compiled.json"),
+        OutputKind::Tree => source_root.join("build/kleio-tree.json"),
+        OutputKind::TreesDocument => source_root.join("build/ourania-trees-document.json"),
     }
+}
+
+fn default_data_root() -> PathBuf {
+    if let Some(path) = std::env::var_os("KLEIO_DATA_DIR").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        return Path::new(&path).join("kleio");
+    }
+
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return Path::new(&home).join(".local/share/kleio");
+    }
+
+    PathBuf::from(".kleio-data")
 }
 
 fn write_local_data_bundle_json(source_root: PathBuf, output_path: PathBuf) -> ExitCode {
@@ -90,53 +112,26 @@ fn write_local_data_bundle_json(source_root: PathBuf, output_path: PathBuf) -> E
     }
 }
 
-fn init_example_local_data(source_root: PathBuf) -> ExitCode {
-    let files = [
-        (
-            "registry.toml",
-            "id = \"registry_private_tree_example\"\nkind = \"registry\"\ntitle = \"Private example tree registry\"\n\n[tree]\nid = \"private-example-tree\"\ntitle = \"Private Example Tree\"\ndescription = \"Private ignored example tree compiled from local-data files.\"\nmain_person = \"person_alex_example\"\n",
-        ),
-        (
-            "records/person_alex_example.md",
-            "+++\nid = \"person_alex_example\"\nkind = \"person\"\ntitle = \"Alex Example\"\ndate = 1900-01-01\nsummary = \"Fictional placeholder person for private local-data authoring.\"\ntags = [\"example\", \"fictional\"]\nrelated = [\"person_morgan_example\"]\ngiven = \"Alex\"\nsurname = \"Example\"\nsex = \"unknown\"\nx = 0\ny = 0\n+++\n\n# Alex Example\n\nThis ignored private example record is fictional placeholder data only.\n",
-        ),
-        (
-            "records/person_morgan_example.md",
-            "+++\nid = \"person_morgan_example\"\nkind = \"person\"\ntitle = \"Morgan Example\"\ndate = 1900-01-01\nsummary = \"Second fictional placeholder person for private relationship tests.\"\ntags = [\"example\", \"fictional\"]\nrelated = [\"person_alex_example\"]\ngiven = \"Morgan\"\nsurname = \"Example\"\nsex = \"unknown\"\nx = 180\ny = 0\n+++\n\n# Morgan Example\n\nThis ignored private example record is fictional placeholder data only.\n",
-        ),
-        (
-            "relationships/alex_morgan_example.toml",
-            "id = \"relationship_alex_morgan_example\"\nkind = \"relationship\"\ntitle = \"Example association\"\nrelationship = \"associate\"\nsource = \"person_alex_example\"\ntarget = \"person_morgan_example\"\n",
-        ),
-    ];
+fn init_example_local_data(workspace_root: PathBuf) -> ExitCode {
+    let options = LocalSkeletonOptions {
+        birth_date: Some("1900-01-01".to_string()),
+        force: false,
+        ..LocalSkeletonOptions::default()
+    };
 
-    for (relative_path, contents) in files {
-        let path = source_root.join(relative_path);
-        if path.exists() {
-            eprintln!("left existing {} unchanged", path.display());
-            continue;
+    match create_workspace_skeleton(&workspace_root, &options) {
+        Ok(()) => {
+            println!(
+                "initialized ignored private Kleio workspace example under {}",
+                workspace_root.display()
+            );
+            ExitCode::SUCCESS
         }
-
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                eprintln!("failed to create {}: {err}", parent.display());
-                return ExitCode::FAILURE;
-            }
+        Err(err) => {
+            eprintln!("failed to initialize Kleio workspace example: {err}");
+            ExitCode::FAILURE
         }
-
-        if let Err(err) = fs::write(&path, contents) {
-            eprintln!("failed to write {}: {err}", path.display());
-            return ExitCode::FAILURE;
-        }
-
-        println!("wrote {}", path.display());
     }
-
-    println!(
-        "initialized ignored private local-data example under {}",
-        source_root.display()
-    );
-    ExitCode::SUCCESS
 }
 
 fn write_local_tree_json(source_root: PathBuf, output_path: PathBuf) -> ExitCode {
@@ -278,7 +273,7 @@ fn check_expected_json(
 
 fn print_usage() {
     eprintln!(
-        "Usage: cargo run -p kleio --example compile_local_data -- [--tree|--trees-document|--bundle] [--check] [--init-example] [source-root] [output-json]\n\n\
-         Defaults:\n  mode: --tree\n  source-root: local-data\n  tree output: local-data/compiled/kleio-tree.json\n  trees document output: local-data/compiled/ourania-trees-document.json\n  bundle output: local-data/compiled/kleio-local-data.json"
+        "Usage: cargo run -p kleio --example compile_local_data -- [--tree|--trees-document|--bundle] [--check] [--init-example] [workspace-root] [output-json]\n\n\
+  workspace-root: $KLEIO_DATA_DIR, $XDG_DATA_HOME/kleio, or ~/.local/share/kleio\n  compiles the default world at <workspace-root>/worlds/default\n  tree output: <world-root>/build/kleio-tree.json\n  trees document output: <world-root>/build/ourania-trees-document.json\n  bundle output: <world-root>/build/kleio.compiled.json"
     );
 }

@@ -42,33 +42,40 @@ The core approach in `kleio` is:
 - keep uncommon or source-specific concepts as `EventKind::Other(String)`
 - attach extra source-specific metadata as generic `Provenance` (attributes/tags/citations)
 
-## Private local-data authoring
+## Private Kleio data authoring
 
-This workspace uses ignored `local-data/` at the repository root for private
-Kleio/Urania authoring files that should not be checked in or bundled:
+Kleio local authoring uses a workspace/world layout. A workspace contains one or
+more worlds; each world owns semantic records (entities, events, assertions,
+sources, imports, schemas) and saved views (timelines, trees, maps, calendars,
+visualizations). `kleio-cli` defaults to the standard XDG data location
+(`$XDG_DATA_HOME/kleio`, usually `~/.local/share/kleio`) and accepts an explicit
+workspace root for scratch/local development.
 
-- Markdown records with TOML frontmatter for prose-heavy person records.
-- Plain TOML files for relationships, registries, config, and other structured data.
-- Private generated JSON under `local-data/compiled/`.
+- Markdown records with TOML frontmatter for prose-heavy entity/event/assertion/source records.
+- Plain TOML files for workspace/world config, saved views, schemas, vocabularies, and import reports.
+- Generated JSON under `worlds/<world>/build/`.
+- Raw import artifacts under `worlds/<world>/imports/`.
 
-Compile a private `TreeDocument` JSON with:
+Create or compile a workspace with:
 
 ```bash
-cargo run -p kleio --example compile_local_data -- --tree local-data local-data/compiled/kleio-tree.json
+cargo run -p kleio-cli_rs --bin kleio-cli -- init-workspace
+cargo run -p kleio-cli_rs --bin kleio-cli -- compile
+cargo run -p kleio-cli_rs --bin kleio-cli -- compile-ecs
+cargo run -p kleio-cli_rs --bin kleio-cli -- compile-tree --view main-family-tree
 ```
 
-Validate that the private generated tree JSON is current with:
+For repo-local scratch testing:
 
 ```bash
-cargo run -p kleio --example compile_local_data -- --tree --check local-data local-data/compiled/kleio-tree.json
+cargo run -p kleio-cli_rs --bin kleio-cli -- init-workspace crates/kleio-cli/.kleio-data
 ```
 
-You can also write the lower-level generic bundle with `--bundle`. See
-`docs/local-data-authoring.md` in the workspace root for the current first-pass
-file shapes. SQLite output remains a future-compatible target for now.
+See `docs/kleio-data-authoring.md` in the workspace root for the current file
+shapes. SQLite output remains a future-compatible target for now.
 
 Documentation examples must stay fictional: use IDs such as
-`person_alex_example`, `person_morgan_example`, `place_example_town`, and dates
+`person:alex-example`, `person:morgan-example`, `place:example-place`, and dates
 such as `1900-01-01`; do not use real personal names, real birth dates, or real
 family examples.
 

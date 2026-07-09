@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use super::LocalAuthoringError;
+use super::{
+    DEFAULT_WORLD_SLUG, LocalAuthoringError, WorkspaceConfig, WorkspacePaths, WorldConfig,
+    WorldPaths,
+};
 
-pub const DEFAULT_PROJECT_ID: &str = "private-timeline";
+pub const DEFAULT_PROJECT_ID: &str = DEFAULT_WORLD_SLUG;
 pub const DEFAULT_PERSON_SLUG: &str = "example-person";
 pub const DEFAULT_PLACE_ID: &str = "place:unknown-birth-place";
 pub const DEFAULT_SOURCE_ID: &str = "source:personal-knowledge";
@@ -60,7 +62,7 @@ impl Default for LocalSkeletonOptions {
     fn default() -> Self {
         Self {
             project_id: DEFAULT_PROJECT_ID.to_string(),
-            title: "Private timeline".to_string(),
+            title: "Default world".to_string(),
             person_slug: DEFAULT_PERSON_SLUG.to_string(),
             person_name: "Example Person".to_string(),
             birth_date: None,
@@ -70,6 +72,14 @@ impl Default for LocalSkeletonOptions {
 }
 
 impl LocalSkeletonOptions {
+    pub fn world_slug(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn world_id(&self) -> String {
+        format!("world:{}", self.world_slug())
+    }
+
     pub fn person_id(&self) -> String {
         format!("person:{}", self.person_slug)
     }
@@ -80,17 +90,18 @@ impl LocalSkeletonOptions {
 }
 
 pub fn create_local_person(
-    root: impl AsRef<Path>,
+    world_root: impl AsRef<Path>,
     options: &LocalPersonOptions,
 ) -> Result<(), LocalAuthoringError> {
     validate_slug(&options.person_slug, "person slug")?;
-    let root = root.as_ref();
-    create_dir(root, root)?;
-    create_dir(root, &root.join("people"))?;
+    let world_root = world_root.as_ref();
+    let paths = WorldPaths::new(world_root);
+    create_dir(world_root, world_root)?;
+    create_dir(world_root, &paths.people_dir())?;
     write_new_file(
-        root,
-        &root
-            .join("people")
+        world_root,
+        &paths
+            .people_dir()
             .join(format!("{}.md", options.person_slug)),
         &person_markdown(&PersonTemplate {
             person_id: options.person_id(),
@@ -101,7 +112,7 @@ pub fn create_local_person(
 
     if options.create_birth_event {
         create_local_birth_event(
-            root,
+            world_root,
             &LocalBirthEventOptions {
                 person_slug: options.person_slug.clone(),
                 person_name: options.person_name.clone(),
@@ -115,31 +126,46 @@ pub fn create_local_person(
 }
 
 pub fn create_local_birth_event(
-    root: impl AsRef<Path>,
+    world_root: impl AsRef<Path>,
     options: &LocalBirthEventOptions,
 ) -> Result<(), LocalAuthoringError> {
     validate_slug(&options.person_slug, "person slug")?;
-    let root = root.as_ref();
-    create_dir(root, root)?;
-    create_dir(root, &root.join("events"))?;
-    create_dir(root, &root.join("places"))?;
-    create_dir(root, &root.join("sources"))?;
+    let world_root = world_root.as_ref();
+    let paths = WorldPaths::new(world_root);
+    create_dir(world_root, world_root)?;
+    create_dir(world_root, &paths.births_dir())?;
+    create_dir(world_root, &paths.places_dir())?;
+    create_dir(world_root, &paths.assertions_dir())?;
+    create_dir(world_root, &paths.sources_dir())?;
 
     write_new_file(
-        root,
-        &root.join("places/unknown-birth-place.toml"),
+        world_root,
+        &paths.places_dir().join("unknown-birth-place.toml"),
         &unknown_place_toml(),
         false,
     )?;
     write_new_file(
-        root,
-        &root.join("sources/personal-knowledge.md"),
+        world_root,
+        &paths.sources_dir().join("personal-knowledge.md"),
         &personal_knowledge_source_markdown(),
         false,
     )?;
     write_new_file(
-        root,
-        &root.join("events").join(format!(
+        world_root,
+        &paths
+            .assertions_dir()
+            .join(format!("birth-{}.md", options.person_slug)),
+        &birth_assertion_markdown(&BirthEventTemplate {
+            event_id: options.birth_event_id(),
+            person_id: options.person_id(),
+            person_name: options.person_name.clone(),
+            birth_date: options.birth_date.clone(),
+        }),
+        options.force,
+    )?;
+    write_new_file(
+        world_root,
+        &paths.births_dir().join(format!(
             "{}-birth-{}.md",
             options.birth_date.as_deref().unwrap_or("unknown-date"),
             options.person_slug
@@ -156,39 +182,118 @@ pub fn create_local_birth_event(
     Ok(())
 }
 
-pub fn create_local_skeleton(
-    root: impl AsRef<Path>,
+pub fn create_workspace_skeleton(
+    workspace_root: impl AsRef<Path>,
     options: &LocalSkeletonOptions,
 ) -> Result<(), LocalAuthoringError> {
-    validate_slug(&options.person_slug, "person slug")?;
-    validate_slug(&options.project_id, "project id")?;
-    let root = root.as_ref();
-    create_dir(root, root)?;
+    validate_slug(options.world_slug(), "world slug")?;
+    let workspace_root = workspace_root.as_ref();
+    let workspace_paths = WorkspacePaths::new(workspace_root);
+    create_dir(workspace_root, workspace_root)?;
+    create_dir(workspace_root, &workspace_paths.worlds_dir())?;
+
+    write_new_file(
+        workspace_root,
+        &workspace_paths.config(),
+        &workspace_toml(options)?,
+        options.force,
+    )?;
+    create_world_skeleton(workspace_paths.world(options.world_slug()).root(), options)
+}
+
+pub fn create_world_layout(
+    world_root: impl AsRef<Path>,
+    options: &LocalSkeletonOptions,
+) -> Result<(), LocalAuthoringError> {
+    validate_slug(options.world_slug(), "world slug")?;
+    let world_root = world_root.as_ref();
+    let paths = WorldPaths::new(world_root);
+    create_dir(world_root, world_root)?;
 
     for dir in [
-        "people",
-        "events",
-        "places",
-        "sources",
-        "media/people",
-        "media/places",
-        "imports/gedcom",
-        "vocab",
-        "build",
+        paths.people_dir(),
+        paths.places_dir(),
+        paths.organizations_dir(),
+        paths.objects_dir(),
+        paths.concepts_dir(),
+        paths.births_dir(),
+        paths.deaths_dir(),
+        paths.residences_dir(),
+        paths.marriages_dir(),
+        paths.migrations_dir(),
+        paths.observations_dir(),
+        paths.moments_dir(),
+        paths.other_events_dir(),
+        paths.assertions_dir(),
+        paths.sources_dir(),
+        paths.media_people_dir(),
+        paths.media_places_dir(),
+        paths.media_sources_dir(),
+        paths.media_events_dir(),
+        paths.gedcom_imports_dir(),
+        paths.wikidata_imports_dir(),
+        paths.csv_imports_dir(),
+        paths.timeline_views_dir(),
+        paths.tree_views_dir(),
+        paths.map_views_dir(),
+        paths.calendar_views_dir(),
+        paths.visualization_views_dir(),
+        paths.component_schemas_dir(),
+        paths.bundle_schemas_dir(),
+        paths.event_schemas_dir(),
+        paths.view_schemas_dir(),
+        paths.vocab_schemas_dir(),
+        paths.importer_systems_dir(),
+        paths.compiler_systems_dir(),
+        paths.validator_systems_dir(),
+        paths.renderer_systems_dir(),
+        paths.build_dir(),
     ] {
-        create_dir(root, &root.join(dir))?;
+        create_dir(world_root, &dir)?;
     }
 
     write_new_file(
-        root,
-        &root.join("kleio.toml"),
-        &project_toml(options),
+        world_root,
+        &paths.config(),
+        &world_toml(options)?,
         options.force,
     )?;
     write_new_file(
-        root,
-        &root
-            .join("people")
+        world_root,
+        &paths.vocab_schemas_dir().join("event-kinds.toml"),
+        &event_kinds_toml(),
+        options.force,
+    )?;
+    write_new_file(
+        world_root,
+        &paths.vocab_schemas_dir().join("participant-roles.toml"),
+        &participant_roles_toml(),
+        options.force,
+    )?;
+    write_new_file(
+        world_root,
+        &paths.gedcom_imports_dir().join("README.md"),
+        &gedcom_imports_readme(),
+        options.force,
+    )?;
+    write_schema_seed_files(world_root, &paths, options.force)?;
+
+    Ok(())
+}
+
+pub fn create_world_skeleton(
+    world_root: impl AsRef<Path>,
+    options: &LocalSkeletonOptions,
+) -> Result<(), LocalAuthoringError> {
+    validate_slug(&options.person_slug, "person slug")?;
+    let world_root = world_root.as_ref();
+    let paths = WorldPaths::new(world_root);
+    create_world_layout(world_root, options)?;
+
+    write_new_file(
+        world_root,
+        &paths
+            .people_dir()
             .join(format!("{}.md", options.person_slug)),
         &person_markdown(&PersonTemplate {
             person_id: options.person_id(),
@@ -196,53 +301,139 @@ pub fn create_local_skeleton(
         }),
         options.force,
     )?;
-    write_new_file(
-        root,
-        &root.join("events").join(format!(
-            "{}-birth-{}.md",
-            options.birth_date.as_deref().unwrap_or("unknown-date"),
-            options.person_slug
-        )),
-        &birth_event_markdown(&BirthEventTemplate {
-            event_id: options.birth_event_id(),
-            person_id: options.person_id(),
+    create_local_birth_event(
+        world_root,
+        &LocalBirthEventOptions {
+            person_slug: options.person_slug.clone(),
             person_name: options.person_name.clone(),
             birth_date: options.birth_date.clone(),
-        }),
+            force: options.force,
+        },
+    )?;
+    write_new_file(
+        world_root,
+        &paths.timeline_views_dir().join("example-life.toml"),
+        &timeline_view_toml(options),
         options.force,
     )?;
     write_new_file(
-        root,
-        &root.join("places/unknown-birth-place.toml"),
-        &unknown_place_toml(),
-        options.force,
-    )?;
-    write_new_file(
-        root,
-        &root.join("sources/personal-knowledge.md"),
-        &personal_knowledge_source_markdown(),
-        options.force,
-    )?;
-    write_new_file(
-        root,
-        &root.join("vocab/event-kinds.toml"),
-        &event_kinds_toml(),
-        options.force,
-    )?;
-    write_new_file(
-        root,
-        &root.join("vocab/participant-roles.toml"),
-        &participant_roles_toml(),
-        options.force,
-    )?;
-    write_new_file(
-        root,
-        &root.join("imports/gedcom/README.md"),
-        &gedcom_imports_readme(),
+        world_root,
+        &paths.tree_views_dir().join("main-family-tree.toml"),
+        &tree_view_toml(options),
         options.force,
     )?;
 
     Ok(())
+}
+
+pub fn create_local_skeleton(
+    root: impl AsRef<Path>,
+    options: &LocalSkeletonOptions,
+) -> Result<(), LocalAuthoringError> {
+    create_workspace_skeleton(root, options)
+}
+
+fn write_schema_seed_files(
+    world_root: &Path,
+    paths: &WorldPaths,
+    force: bool,
+) -> Result<(), LocalAuthoringError> {
+    for (file_name, id, component_name, description) in [
+        (
+            "identity.toml",
+            "component:identity",
+            "Identity",
+            "Stable world-scoped identity for an entity, event, or view.",
+        ),
+        (
+            "primary-name.toml",
+            "component:primary-name",
+            "PrimaryName",
+            "Human-readable primary display name.",
+        ),
+        (
+            "participants.toml",
+            "component:participants",
+            "Participants",
+            "Entity references and roles attached to an event.",
+        ),
+        (
+            "source-links.toml",
+            "component:source-links",
+            "SourceLinks",
+            "Assertion and source references attached to compiled records.",
+        ),
+    ] {
+        write_new_file(
+            world_root,
+            &paths.component_schemas_dir().join(file_name),
+            &component_schema_toml(id, component_name, description),
+            force,
+        )?;
+    }
+
+    write_new_file(
+        world_root,
+        &paths.bundle_schemas_dir().join("person.toml"),
+        &bundle_schema_toml(
+            "bundle:person",
+            &[
+                "component:identity",
+                "component:primary-name",
+                "component:source-links",
+            ],
+        ),
+        force,
+    )?;
+    write_new_file(
+        world_root,
+        &paths.bundle_schemas_dir().join("birth-event.toml"),
+        &bundle_schema_toml(
+            "bundle:birth-event",
+            &[
+                "component:identity",
+                "component:participants",
+                "component:source-links",
+            ],
+        ),
+        force,
+    )?;
+
+    Ok(())
+}
+
+fn component_schema_toml(id: &str, component_name: &str, description: &str) -> String {
+    format!(
+        r#"schema_version = 1
+id = "{}"
+kind = "ecs-component"
+name = "{}"
+description = "{}"
+"#,
+        escape_toml_basic(id),
+        escape_toml_basic(component_name),
+        escape_toml_basic(description)
+    )
+}
+
+fn bundle_schema_toml(id: &str, components: &[&str]) -> String {
+    let components = components
+        .iter()
+        .map(|component| format!("  \"{}\"", escape_toml_basic(component)))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!(
+        r#"schema_version = 1
+id = "{}"
+kind = "ecs-bundle"
+
+components = [
+{}
+]
+"#,
+        escape_toml_basic(id),
+        components
+    )
 }
 
 fn create_dir(root: &Path, path: &Path) -> Result<(), LocalAuthoringError> {
@@ -272,33 +463,23 @@ fn display_path(root: &Path, path: &Path) -> std::path::PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
-fn project_toml(options: &LocalSkeletonOptions) -> String {
-    format!(
-        r#"schema_version = 1
-id = "{}"
-kind = "registry"
-title = "{}"
+fn workspace_toml(options: &LocalSkeletonOptions) -> Result<String, LocalAuthoringError> {
+    toml::to_string_pretty(&WorkspaceConfig::with_default_world(
+        options.world_slug(),
+        &options.title,
+    ))
+    .map_err(|source| LocalAuthoringError::TomlSerialize {
+        path: WorkspacePaths::new(".").config(),
+        source,
+    })
+}
 
-[tree]
-id = "{}"
-title = "{}"
-main_person = "{}"
-description = "Private timeline source files. Plain files are canonical; build outputs are generated."
-
-[build]
-compiled_json = "build/kleio.compiled.json"
-sqlite = "build/kleio.sqlite"
-
-[imports.gedcom.primary]
-# Put versioned GEDCOM files under imports/gedcom/ and point this at the active one.
-# path = "imports/gedcom/family-2026-07-08.ged"
-strategy = "link"
-"#,
-        escape_toml_basic(&options.project_id),
-        escape_toml_basic(&options.title),
-        escape_toml_basic(&options.project_id),
-        escape_toml_basic(&options.title),
-        escape_toml_basic(&options.person_id())
+fn world_toml(options: &LocalSkeletonOptions) -> Result<String, LocalAuthoringError> {
+    toml::to_string_pretty(&WorldConfig::new(options.world_slug(), &options.title)).map_err(
+        |source| LocalAuthoringError::TomlSerialize {
+            path: WorldPaths::new(".").config(),
+            source,
+        },
     )
 }
 
@@ -315,45 +496,42 @@ struct BirthEventTemplate {
 }
 
 fn person_markdown(options: &PersonTemplate) -> String {
-    let (given, surname) = split_display_name(&options.person_name);
+    let (given, family) = split_display_name(&options.person_name);
     format!(
         r#"+++
+schema_version = 1
 id = "{}"
 kind = "person"
-title = "{}"
-given = "{}"
-surname = "{}"
-sex = "unknown"
+primary_name = "{}"
 tags = ["starter"]
 related = []
+
+[names.primary]
+full = "{}"
+given = "{}"
+family = "{}"
 +++
 
 # {}
 
-Add biographical notes here. Keep concrete life facts in `events/` so the timeline can include sources, places, and multiple participants.
+Add biographical notes here. Keep concrete life facts in `events/` so timeline and tree views can project source-backed world data.
 "#,
         escape_toml_basic(&options.person_id),
         escape_toml_basic(&options.person_name),
+        escape_toml_basic(&options.person_name),
         escape_toml_basic(&given),
-        escape_toml_basic(&surname),
+        escape_toml_basic(&family),
         options.person_name
     )
 }
 
 fn birth_event_markdown(options: &BirthEventTemplate) -> String {
-    let mut fields = BTreeMap::new();
-    fields.insert("id", escape_toml_basic(&options.event_id));
-    fields.insert(
-        "title",
-        escape_toml_basic(&format!("Birth of {}", options.person_name)),
-    );
-
     let date_line = options
         .birth_date
         .as_ref()
         .map(|date| {
             format!(
-                "date = \"{}\"\ndate_precision = \"day\"\n",
+                "time = \"{}\"\ndate_precision = \"day\"\n",
                 escape_toml_basic(date)
             )
         })
@@ -361,37 +539,64 @@ fn birth_event_markdown(options: &BirthEventTemplate) -> String {
 
     format!(
         r#"+++
+schema_version = 1
 id = "{}"
 kind = "birth"
-class = "life"
 title = "{}"
-{}place = "{}"
-
-participants = [
-  {{ entity = "{}", role = "child" }},
+{}participants = [
+  {{ entity = "{}", role = "subject" }},
 ]
-
-sources = [
-  "{}",
+places = [
+  {{ entity = "{}", role = "birthplace" }},
 ]
+assertions = ["assertion:birth-{}"]
 +++
 
 # Birth of {}
 
 Replace the placeholder place/source with the best available evidence when you have it.
 "#,
-        fields["id"],
-        fields["title"],
+        escape_toml_basic(&options.event_id),
+        escape_toml_basic(&format!("Birth of {}", options.person_name)),
         date_line,
-        DEFAULT_PLACE_ID,
         escape_toml_basic(&options.person_id),
-        DEFAULT_SOURCE_ID,
+        DEFAULT_PLACE_ID,
+        options
+            .person_id
+            .strip_prefix("person:")
+            .unwrap_or(&options.person_id),
         options.person_name
     )
 }
 
+fn birth_assertion_markdown(options: &BirthEventTemplate) -> String {
+    format!(
+        r#"+++
+schema_version = 1
+id = "assertion:birth-{}"
+kind = "birth-date"
+subject = "{}"
+predicate = "born_on"
+value = "{}"
+sources = ["{}"]
+confidence = "medium"
++++
+
+Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
+"#,
+        options
+            .person_id
+            .strip_prefix("person:")
+            .unwrap_or(&options.person_id),
+        escape_toml_basic(&options.person_id),
+        escape_toml_basic(options.birth_date.as_deref().unwrap_or("unknown")),
+        DEFAULT_SOURCE_ID
+    )
+}
+
 fn unknown_place_toml() -> String {
-    r#"id = "place:unknown-birth-place"
+    r#"schema_version = 1
+id = "place:unknown-birth-place"
 kind = "place"
 title = "Unknown birth place"
 
@@ -403,11 +608,12 @@ preferred = "Unknown birth place"
 
 fn personal_knowledge_source_markdown() -> String {
     r#"+++
+schema_version = 1
 id = "source:personal-knowledge"
-kind = "source"
-title = "Personal knowledge"
-source_type = "note"
-tags = ["starter"]
+kind = "birth-record"
+title = "Personal knowledge placeholder"
+date_accessed = "2026-07-09"
+media = []
 +++
 
 Use this placeholder only until you have a more specific source.
@@ -463,20 +669,72 @@ fn gedcom_imports_readme() -> String {
 
 Keep raw, versioned GEDCOM exports here, for example:
 
-- `family-2026-07-08.ged`
-- `family-ancestry-export-2026-07-08.ged`
+- `family-neutral-example.ged`
+- `family-export-neutral-example.ged`
 
-Select the active GEDCOM in `../../kleio.toml`:
+Select the active GEDCOM in this world's `world.toml`:
 
 ```toml
 [imports.gedcom.primary]
-path = "imports/gedcom/family-2026-07-08.ged"
+path = "imports/gedcom/family-neutral-example.ged"
 strategy = "link"
 ```
 
-Raw imports should be treated as source artifacts. Generated JSON/SQLite belongs under `build/`.
+Raw imports are world-owned source artifacts. Generated JSON/SQLite belongs under `build/`.
 "#
     .to_string()
+}
+
+fn timeline_view_toml(options: &LocalSkeletonOptions) -> String {
+    format!(
+        r#"schema_version = 1
+id = "timeline:example-life"
+kind = "timeline-view"
+title = "Example Life Timeline"
+
+[subject]
+entity = "{}"
+
+[filter]
+event_kinds = ["birth", "residence", "marriage", "death"]
+include_related_people = true
+include_context_events = false
+
+[sort]
+by = "date"
+direction = "ascending"
+
+[display]
+group_by = "year"
+show_sources = true
+show_uncertainty = true
+"#,
+        escape_toml_basic(&options.person_id())
+    )
+}
+
+fn tree_view_toml(options: &LocalSkeletonOptions) -> String {
+    format!(
+        r#"schema_version = 1
+id = "tree:main-family-tree"
+kind = "tree-view"
+title = "Main Family Tree"
+
+[root]
+entity = "{}"
+
+[filter]
+relationship_kinds = ["parent", "child", "spouse"]
+generations_up = 5
+generations_down = 3
+
+[display]
+show_life_dates = true
+show_places = true
+show_sources = false
+"#,
+        escape_toml_basic(&options.person_id())
+    )
 }
 
 fn validate_slug(value: &str, label: &str) -> Result<(), LocalAuthoringError> {
@@ -522,7 +780,7 @@ mod tests {
     use crate::local_authoring::{compile_local_data, compile_local_tree};
 
     #[test]
-    fn creates_starter_timeline_skeleton() {
+    fn creates_starter_world_skeleton() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-local-skeleton-{}-{}",
             std::process::id(),
@@ -532,8 +790,8 @@ mod tests {
                 .as_nanos()
         ));
         let options = LocalSkeletonOptions {
-            project_id: "test-timeline".to_string(),
-            title: "Test timeline".to_string(),
+            project_id: "test-world".to_string(),
+            title: "Test world".to_string(),
             person_slug: "alex-example".to_string(),
             person_name: "Alex Example".to_string(),
             birth_date: Some("1900-01-01".to_string()),
@@ -542,13 +800,19 @@ mod tests {
 
         create_local_skeleton(&temp_dir, &options).expect("create skeleton");
 
-        assert!(temp_dir.join("imports/gedcom/README.md").exists());
+        let world_root = temp_dir.join("worlds/test-world");
+        assert!(temp_dir.join("kleio.toml").exists());
+        assert!(world_root.join("world.toml").exists());
+        assert!(world_root.join("imports/gedcom/README.md").exists());
         assert!(
-            temp_dir
-                .join("events/1900-01-01-birth-alex-example.md")
+            world_root
+                .join("events/births/1900-01-01-birth-alex-example.md")
                 .exists()
         );
-        let bundle = compile_local_data(&temp_dir).expect("skeleton compiles");
+        assert!(world_root.join("assertions/birth-alex-example.md").exists());
+        assert!(world_root.join("schemas/components/identity.toml").exists());
+        assert!(world_root.join("schemas/bundles/person.toml").exists());
+        let bundle = compile_local_data(&world_root).expect("world skeleton compiles");
         assert!(
             bundle
                 .markdown_records
@@ -562,7 +826,7 @@ mod tests {
                 .any(|record| record.id == "event:birth-alex-example")
         );
 
-        let tree = compile_local_tree(&temp_dir).expect("skeleton tree compiles");
+        let tree = compile_local_tree(&world_root).expect("skeleton tree compiles");
         assert_eq!(tree.people.len(), 1);
         assert_eq!(tree.events.len(), 1);
 
