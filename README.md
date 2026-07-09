@@ -42,6 +42,36 @@ The core approach in `kleio` is:
 - keep uncommon or source-specific concepts as `EventKind::Other(String)`
 - attach extra source-specific metadata as generic `Provenance` (attributes/tags/citations)
 
+## Private local-data authoring
+
+This workspace uses ignored `local-data/` at the repository root for private
+Kleio/Urania authoring files that should not be checked in or bundled:
+
+- Markdown records with TOML frontmatter for prose-heavy person records.
+- Plain TOML files for relationships, registries, config, and other structured data.
+- Private generated JSON under `local-data/compiled/`.
+
+Compile a private `TreeDocument` JSON with:
+
+```bash
+cargo run -p kleio --example compile_local_data -- --tree local-data local-data/compiled/kleio-tree.json
+```
+
+Validate that the private generated tree JSON is current with:
+
+```bash
+cargo run -p kleio --example compile_local_data -- --tree --check local-data local-data/compiled/kleio-tree.json
+```
+
+You can also write the lower-level generic bundle with `--bundle`. See
+`docs/local-data-authoring.md` in the workspace root for the current first-pass
+file shapes. SQLite output remains a future-compatible target for now.
+
+Documentation examples must stay fictional: use IDs such as
+`person_alex_example`, `person_morgan_example`, `place_example_town`, and dates
+such as `1900-01-01`; do not use real personal names, real birth dates, or real
+family examples.
+
 ## Experimental Wikidata truthy import
 
 `kleio` includes a small experimental ETL command for sampling a bounded slice of
