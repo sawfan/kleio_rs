@@ -10,7 +10,7 @@
 //! - Deterministic generated JSON files under `build/`.
 //! - Raw import artifacts, such as versioned GEDCOM files, under `imports/`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -21,9 +21,14 @@ use crate::TreeDocument;
 
 mod build;
 mod config;
+mod data_validation;
 mod ecs_compile;
 mod gedcom_import;
+#[cfg(test)]
+mod gedcom_import_tests;
+mod gedcom_parse;
 mod imports;
+mod kinship;
 mod paths;
 mod records;
 mod schema;
@@ -47,15 +52,19 @@ pub use ecs_compile::{
     LocalEcsBundle, LocalEcsEntity, LocalEcsResources, LocalEcsViews, compile_local_ecs,
     write_local_ecs_json,
 };
-pub use gedcom_import::{PrimaryGedcomImportOptions, set_primary_gedcom_import};
+pub use gedcom_import::{
+    LocalGedcomIngestOptions, LocalGedcomIngestReport, PrimaryGedcomImportOptions,
+    ingest_primary_gedcom_to_world, set_primary_gedcom_import,
+};
 pub use imports::{LocalImportKind, LocalImportReportOptions, create_local_import_report};
+pub use kinship::{LocalDerivedKinshipRelationship, infer_local_kinship_relationships};
 pub use paths::{
     DEFAULT_WORLD_SLUG, WORKSPACE_CONFIG_FILE, WORLD_CONFIG_FILE, WorkspacePaths, WorldPaths,
 };
 pub use records::{
     LocalAssertionOptions, LocalEntityKind, LocalEntityOptions, LocalEventOptions,
-    LocalSourceOptions, create_local_assertion, create_local_entity, create_local_event,
-    create_local_source,
+    LocalRelationshipOptions, LocalSourceOptions, create_local_assertion, create_local_entity,
+    create_local_event, create_local_relationship, create_local_source,
 };
 pub use schema::{LocalSchemaKind, LocalSchemaOptions, create_local_schema};
 
@@ -73,6 +82,7 @@ pub use views::{
     LocalViewKind, LocalViewOptions, LocalViewSummary, create_local_view, list_local_views,
 };
 
+use data_validation::validate_local_data;
 use tree_compile::{tree_from_local_data_bundle, tree_from_local_data_bundle_with_view};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -594,177 +604,6 @@ fn toml_table_to_json_map(
                 })
         })
         .collect()
-}
-
-fn validate_local_data(
-    markdown_records: &[LocalMarkdownRecord],
-    toml_documents: &[LocalTomlDocument],
-) -> Result<(), LocalAuthoringError> {
-    let mut ids = BTreeSet::new();
-
-    for record in markdown_records {
-        validate_id(&record.id, &record.path)?;
-        if !ids.insert(record.id.clone()) {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("duplicate id `{}`", record.id),
-            });
-        }
-    }
-
-    for document in toml_documents {
-        if let Some(id) = &document.id {
-            validate_id(id, &document.path)?;
-            if !ids.insert(id.clone()) {
-                return Err(LocalAuthoringError::Validation {
-                    message: format!("duplicate id `{id}`"),
-                });
-            }
-        }
-    }
-
-    for record in markdown_records {
-        for related_id in &record.related {
-            if !ids.contains(related_id) {
-                return Err(LocalAuthoringError::Validation {
-                    message: format!(
-                        "{} references missing related id `{related_id}`",
-                        record.path
-                    ),
-                });
-            }
-        }
-
-        if let Some(place_id) = &record.place
-            && !ids.contains(place_id)
-        {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} references missing place `{place_id}`", record.path),
-            });
-        }
-
-        if let Some(participants) = record.attributes.get("participants") {
-            validate_entity_reference_items(record, participants, &ids, "participants")?;
-        }
-
-        if let Some(places) = record.attributes.get("places") {
-            validate_entity_reference_items(record, places, &ids, "places")?;
-        }
-
-        if let Some(assertions) = record.attributes.get("assertions") {
-            validate_id_references(record, assertions, &ids, "assertions")?;
-        }
-
-        if let Some(sources) = record.attributes.get("sources") {
-            validate_id_references(record, sources, &ids, "sources")?;
-        }
-
-        if record.path.starts_with("assertions/") {
-            validate_assertion_record(record, &ids)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_entity_reference_items(
-    record: &LocalMarkdownRecord,
-    items: &serde_json::Value,
-    ids: &BTreeSet<String>,
-    field: &str,
-) -> Result<(), LocalAuthoringError> {
-    let Some(items) = items.as_array() else {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{} `{field}` must be an array", record.path),
-        });
-    };
-
-    for item in items {
-        let Some(entity_id) = item.get("entity").and_then(serde_json::Value::as_str) else {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} {field} item missing `entity`", record.path),
-            });
-        };
-        if !ids.contains(entity_id) {
-            return Err(LocalAuthoringError::Validation {
-                message: format!(
-                    "{} references missing {field} entity `{entity_id}`",
-                    record.path
-                ),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_id_references(
-    record: &LocalMarkdownRecord,
-    values: &serde_json::Value,
-    ids: &BTreeSet<String>,
-    field: &str,
-) -> Result<(), LocalAuthoringError> {
-    let Some(values) = values.as_array() else {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{} `{field}` must be an array", record.path),
-        });
-    };
-
-    for value in values {
-        let Some(id) = value.as_str() else {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} `{field}` must contain only strings", record.path),
-            });
-        };
-        if !ids.contains(id) {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} references missing {field} id `{id}`", record.path),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_assertion_record(
-    record: &LocalMarkdownRecord,
-    ids: &BTreeSet<String>,
-) -> Result<(), LocalAuthoringError> {
-    let Some(subject) = record
-        .attributes
-        .get("subject")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{} assertion missing `subject`", record.path),
-        });
-    };
-
-    if !ids.contains(subject) {
-        return Err(LocalAuthoringError::Validation {
-            message: format!(
-                "{} references missing assertion subject `{subject}`",
-                record.path
-            ),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_id(id: &str, path: &str) -> Result<(), LocalAuthoringError> {
-    if id.trim().is_empty() {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{path} has an empty id"),
-        });
-    }
-
-    if id.chars().any(char::is_whitespace) {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{path} id `{id}` contains whitespace"),
-        });
-    }
-
-    Ok(())
 }
 
 fn relative_path_to_string(path: &Path) -> String {

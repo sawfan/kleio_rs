@@ -210,6 +210,172 @@ fn rejects_missing_assertion_subject_reference() {
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
+#[test]
+fn rejects_missing_relationship_reference() {
+    let temp_dir = test_temp_dir("missing-relationship");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/person-alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Note\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("relationships/alex-missing.toml"),
+        "id = \"relationship:alex-missing\"\nkind = \"relationship\"\ntitle = \"Missing relation\"\nrelationship = \"associate\"\nsource = \"person:alex-example\"\ntarget = \"person:missing\"\n",
+    )
+    .expect("relationship");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing relationship target should fail");
+    assert!(
+        err.to_string().contains("person:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn filters_tree_view_by_configured_generations() {
+    let temp_dir = test_temp_dir("tree-generations");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::create_dir_all(temp_dir.join("views/trees")).expect("tree views dir");
+    for slug in ["grandparent", "parent", "root", "child", "grandchild"] {
+        fs::write(
+            temp_dir.join(format!("entities/people/{slug}.md")),
+            format!(
+                "+++\nid = \"person:{slug}\"\nkind = \"person\"\nprimary_name = \"{slug}\"\n+++\n\n# Note\n"
+            ),
+        )
+        .expect("person");
+    }
+    for (slug, source, target) in [
+        ("grandparent-parent", "person:grandparent", "person:parent"),
+        ("parent-root", "person:parent", "person:root"),
+        ("root-child", "person:root", "person:child"),
+        ("child-grandchild", "person:child", "person:grandchild"),
+    ] {
+        fs::write(
+            temp_dir.join(format!("relationships/{slug}.toml")),
+            format!(
+                "id = \"relationship:{slug}\"\nkind = \"relationship\"\nrelationship = \"biological-parent-child\"\nsource = \"{source}\"\ntarget = \"{target}\"\n"
+            ),
+        )
+        .expect("relationship");
+    }
+    fs::write(
+        temp_dir.join("views/trees/root-tree.toml"),
+        "schema_version = 1\nid = \"tree:root-tree\"\nkind = \"tree-view\"\ntitle = \"Root tree\"\n\n[root]\nentity = \"person:root\"\n\n[filter]\nrelationship_kinds = [\"biological-parent-child\"]\ngenerations_up = 1\ngenerations_down = 1\n",
+    )
+    .expect("tree view");
+
+    let tree = compile_local_tree_with_view(&temp_dir, Some("root-tree")).expect("compile tree");
+    let names = tree
+        .people
+        .iter()
+        .filter_map(|person| tree.person_display_name(person.id))
+        .collect::<Vec<_>>();
+
+    assert_eq!(tree.people.len(), 3);
+    assert!(names.contains(&"parent"));
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"child"));
+    assert!(!names.contains(&"grandparent"));
+    assert!(!names.contains(&"grandchild"));
+    assert_eq!(tree.relationships.len(), 2);
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_missing_tree_view_root_reference() {
+    let temp_dir = test_temp_dir("missing-tree-root");
+    fs::create_dir_all(temp_dir.join("views/trees")).expect("tree views dir");
+    fs::write(
+        temp_dir.join("views/trees/root.toml"),
+        "schema_version = 1\nid = \"tree:root\"\nkind = \"tree-view\"\ntitle = \"Root\"\n\n[root]\nentity = \"person:missing\"\n",
+    )
+    .expect("tree view");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing tree root should fail");
+    assert!(
+        err.to_string().contains("person:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_missing_timeline_view_subject_reference() {
+    let temp_dir = test_temp_dir("missing-timeline-subject");
+    fs::create_dir_all(temp_dir.join("views/timelines")).expect("timeline views dir");
+    fs::write(
+        temp_dir.join("views/timelines/life.toml"),
+        "schema_version = 1\nid = \"timeline:life\"\nkind = \"timeline-view\"\ntitle = \"Life\"\n\n[subject]\nentity = \"person:missing\"\n",
+    )
+    .expect("timeline view");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing timeline subject should fail");
+    assert!(
+        err.to_string().contains("person:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_assertion_missing_predicate() {
+    let temp_dir = test_temp_dir("assertion-missing-predicate");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
+    fs::write(
+        temp_dir.join("entities/people/person-alex.md"),
+        "+++\nid = \"person:alex\"\nkind = \"person\"\nprimary_name = \"Alex\"\n+++\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("assertions/missing-predicate.md"),
+        "+++\nid = \"assertion:missing-predicate\"\nkind = \"identity\"\nsubject = \"person:alex\"\nvalue = \"Alex\"\n+++\n",
+    )
+    .expect("assertion");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing predicate should fail");
+    assert!(
+        err.to_string().contains("predicate"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_assertion_missing_source_reference() {
+    let temp_dir = test_temp_dir("assertion-missing-source");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
+    fs::write(
+        temp_dir.join("entities/people/person-alex.md"),
+        "+++\nid = \"person:alex\"\nkind = \"person\"\nprimary_name = \"Alex\"\n+++\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("assertions/missing-source.md"),
+        "+++\nid = \"assertion:missing-source\"\nkind = \"identity\"\nsubject = \"person:alex\"\npredicate = \"has_name\"\nvalue = \"Alex\"\nsources = [\"source:missing\"]\n+++\n",
+    )
+    .expect("assertion");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing source should fail");
+    assert!(
+        err.to_string().contains("source:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
 fn test_temp_dir(label: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

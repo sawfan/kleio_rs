@@ -117,6 +117,10 @@ impl WorldPaths {
         self.root.join("assertions")
     }
 
+    pub fn relationships_dir(&self) -> PathBuf {
+        self.root.join("relationships")
+    }
+
     pub fn sources_dir(&self) -> PathBuf {
         self.root.join("sources")
     }

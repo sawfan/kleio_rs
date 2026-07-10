@@ -169,7 +169,7 @@ kind = "{}"
 title = "{}"
 {}
 [filter]
-relationship_kinds = ["parent", "child", "spouse"]
+relationship_kinds = ["biological-parent-child", "adoptive-parent-child", "foster-parent-child", "step-parent-child", "guardian-child", "spouse", "partner", "former-spouse", "sibling"]
 generations_up = 5
 generations_down = 3
 

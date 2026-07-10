@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use super::{LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, compile_local_data};
+use super::{
+    LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, compile_local_data,
+    infer_local_kinship_relationships,
+};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalEcsBundle {
@@ -26,6 +29,24 @@ pub struct LocalEcsEntity {
 pub struct LocalEcsResources {
     #[serde(rename = "Views")]
     pub views: LocalEcsViews,
+    #[serde(rename = "Relationships")]
+    pub relationships: LocalEcsRelationships,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalEcsRelationships {
+    pub items: Vec<LocalEcsRelationship>,
+    pub derived_kinship: Vec<super::LocalDerivedKinshipRelationship>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalEcsRelationship {
+    pub id: String,
+    pub relationship_kind: String,
+    pub source: String,
+    pub target: String,
+    pub title: Option<String>,
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -137,8 +158,66 @@ fn ecs_from_local_data_bundle(bundle: &LocalDataBundle) -> LocalEcsBundle {
                 calendars,
                 visualizations,
             },
+            relationships: LocalEcsRelationships {
+                items: ecs_relationships_from_documents(&bundle.toml_documents),
+                derived_kinship: infer_local_kinship_relationships(bundle),
+            },
         },
     }
+}
+
+fn ecs_relationships_from_documents(
+    documents: &[super::LocalTomlDocument],
+) -> Vec<LocalEcsRelationship> {
+    let mut relationships = documents
+        .iter()
+        .filter(|document| document.kind.as_deref() == Some("relationship"))
+        .filter_map(|document| {
+            let id = document.id.clone()?;
+            let source = document.data.get("source")?.as_str()?.to_string();
+            let target = document.data.get("target")?.as_str()?.to_string();
+            let relationship_kind = document
+                .data
+                .get("relationship")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    document
+                        .data
+                        .get("relationship_kind")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .or_else(|| {
+                    document
+                        .data
+                        .get("relation")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or("associate")
+                .to_string();
+            let sources = document
+                .data
+                .get("sources")
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(LocalEcsRelationship {
+                id,
+                relationship_kind,
+                source,
+                target,
+                title: document.title.clone(),
+                sources,
+            })
+        })
+        .collect::<Vec<_>>();
+    relationships.sort_by(|left, right| left.id.cmp(&right.id));
+    relationships
 }
 
 fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEntity {
@@ -308,6 +387,96 @@ mod tests {
                 .any(|entity| entity.id == "source:personal-knowledge")
         );
         assert!(out.exists());
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn includes_relationship_resources() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-ecs-relationships-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        create_workspace_skeleton(&temp_dir, &LocalSkeletonOptions::default()).expect("skeleton");
+        let world_root = temp_dir.join("worlds/default");
+        fs::create_dir_all(world_root.join("relationships")).expect("relationships dir");
+        fs::write(
+            world_root.join("relationships/example-association.toml"),
+            "id = \"relationship:example-association\"\nkind = \"relationship\"\ntitle = \"Example association\"\nrelationship = \"associate\"\nsource = \"person:example-person\"\ntarget = \"person:example-person\"\nsources = [\"source:personal-knowledge\"]\n",
+        )
+        .expect("relationship");
+
+        let ecs = compile_local_ecs(&world_root).expect("compile ecs");
+
+        assert_eq!(ecs.resources.relationships.items.len(), 1);
+        assert_eq!(
+            ecs.resources.relationships.items[0].id,
+            "relationship:example-association"
+        );
+        assert_eq!(
+            ecs.resources.relationships.items[0].source,
+            "person:example-person"
+        );
+        assert_eq!(
+            ecs.resources.relationships.items[0].target,
+            "person:example-person"
+        );
+        assert!(ecs.resources.relationships.derived_kinship.is_empty());
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn includes_inferred_kinship_relationship_resources() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-ecs-derived-kinship-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+        fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+        for slug in ["alex", "morgan", "riley"] {
+            fs::write(
+                temp_dir.join(format!("entities/people/{slug}.md")),
+                format!(
+                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\nprimary_name = \"{slug}\"\n+++\n"
+                ),
+            )
+            .expect("person");
+        }
+        for (slug, source, target) in [
+            ("alex-morgan", "person:alex", "person:morgan"),
+            ("morgan-riley", "person:morgan", "person:riley"),
+        ] {
+            fs::write(
+                temp_dir.join(format!("relationships/{slug}.toml")),
+                format!(
+                    "id = \"relationship:{slug}\"\nkind = \"relationship\"\nrelationship = \"biological-parent-child\"\nsource = \"{source}\"\ntarget = \"{target}\"\n"
+                ),
+            )
+            .expect("relationship");
+        }
+
+        let ecs = compile_local_ecs(&temp_dir).expect("compile ecs");
+
+        assert!(
+            ecs.resources
+                .relationships
+                .derived_kinship
+                .iter()
+                .any(|relationship| {
+                    relationship.relationship_kind == "grandparent-grandchild"
+                        && relationship.source == "person:alex"
+                        && relationship.target == "person:riley"
+                })
+        );
 
         fs::remove_dir_all(temp_dir).expect("remove temp dir");
     }

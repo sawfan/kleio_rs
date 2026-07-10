@@ -53,6 +53,23 @@ impl LocalEventOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRelationshipOptions {
+    pub relationship_slug: String,
+    pub title: String,
+    pub relationship_kind: String,
+    pub source: String,
+    pub target: String,
+    pub sources: Vec<String>,
+    pub force: bool,
+}
+
+impl LocalRelationshipOptions {
+    pub fn id(&self) -> String {
+        format!("relationship:{}", self.relationship_slug)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalSourceOptions {
     pub source_slug: String,
     pub title: String,
@@ -114,6 +131,33 @@ pub fn create_local_event(
     create_dir(world_root, &dir)?;
     let path = dir.join(format!("{}.md", options.event_slug));
     write_new_file(world_root, &path, &event_markdown(options), options.force)?;
+    Ok(path)
+}
+
+pub fn create_local_relationship(
+    world_root: impl AsRef<Path>,
+    options: &LocalRelationshipOptions,
+) -> Result<PathBuf, LocalAuthoringError> {
+    validate_slug(&options.relationship_slug, "relationship slug")?;
+    validate_slug(&options.relationship_kind, "relationship kind")?;
+    validate_record_id(&options.source, "relationship source")?;
+    validate_record_id(&options.target, "relationship target")?;
+    for source_id in &options.sources {
+        validate_record_id(source_id, "relationship source reference")?;
+    }
+
+    let world_root = world_root.as_ref();
+    let paths = WorldPaths::new(world_root);
+    create_dir(world_root, &paths.relationships_dir())?;
+    let path = paths
+        .relationships_dir()
+        .join(format!("{}.toml", options.relationship_slug));
+    write_new_file(
+        world_root,
+        &path,
+        &relationship_toml(options),
+        options.force,
+    )?;
     Ok(path)
 }
 
@@ -201,6 +245,26 @@ Add event notes here. Connect entities through `participants`, places through `p
         escape_toml_basic(&options.event_kind),
         escape_toml_basic(&options.title),
         options.title
+    )
+}
+
+fn relationship_toml(options: &LocalRelationshipOptions) -> String {
+    let sources = toml_string_array(&options.sources);
+    format!(
+        r#"schema_version = 1
+id = "{}"
+kind = "relationship"
+title = "{}"
+relationship = "{}"
+source = "{}"
+target = "{}"
+sources = {sources}
+"#,
+        escape_toml_basic(&options.id()),
+        escape_toml_basic(&options.title),
+        escape_toml_basic(&options.relationship_kind),
+        escape_toml_basic(&options.source),
+        escape_toml_basic(&options.target),
     )
 }
 
@@ -304,6 +368,31 @@ fn validate_slug(value: &str, label: &str) -> Result<(), LocalAuthoringError> {
     Ok(())
 }
 
+fn validate_record_id(value: &str, label: &str) -> Result<(), LocalAuthoringError> {
+    if value.trim().is_empty() {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{label} cannot be empty"),
+        });
+    }
+
+    if value.chars().any(char::is_whitespace) {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{label} `{value}` may not contain whitespace"),
+        });
+    }
+
+    Ok(())
+}
+
+fn toml_string_array(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("\"{}\"", escape_toml_basic(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
+}
+
 fn escape_toml_basic(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -358,6 +447,19 @@ mod tests {
             },
         )
         .expect("source");
+        let relationship = create_local_relationship(
+            &world_root,
+            &LocalRelationshipOptions {
+                relationship_slug: "example-association".to_string(),
+                title: "Example association".to_string(),
+                relationship_kind: "associate".to_string(),
+                source: "person:example-person".to_string(),
+                target: "person:example-person".to_string(),
+                sources: vec!["source:example-source".to_string()],
+                force: false,
+            },
+        )
+        .expect("relationship");
         let assertion = create_local_assertion(
             &world_root,
             &LocalAssertionOptions {
@@ -371,6 +473,10 @@ mod tests {
         )
         .expect("assertion");
 
+        assert_eq!(
+            relationship.strip_prefix(&world_root).unwrap(),
+            Path::new("relationships/example-association.toml")
+        );
         assert_eq!(
             place.strip_prefix(&world_root).unwrap(),
             Path::new("entities/places/example-place.md")

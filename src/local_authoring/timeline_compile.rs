@@ -38,6 +38,14 @@ pub struct LocalTimelineEvent {
     pub notes_markdown: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TimelineFilter {
+    subject: Option<String>,
+    event_kinds: Vec<String>,
+    related_entities: Vec<String>,
+    include_context_events: bool,
+}
+
 pub fn compile_local_timeline(
     world_root: impl AsRef<Path>,
     view_slug: Option<&str>,
@@ -85,14 +93,14 @@ fn timeline_from_local_data_bundle(
         .and_then(|document| document.id.clone())
         .unwrap_or_else(|| "world:default".to_string());
     let view = select_timeline_view(&bundle.toml_documents, view_slug);
-    let event_kinds = view.and_then(timeline_view_event_kinds).unwrap_or_default();
+    let filter = view
+        .map(|view| timeline_filter(view, &bundle.toml_documents))
+        .unwrap_or_default();
     let mut events = bundle
         .markdown_records
         .iter()
         .filter(|record| is_event_record(record))
-        .filter(|record| {
-            event_kinds.is_empty() || event_kinds.iter().any(|kind| kind == &record.kind)
-        })
+        .filter(|record| timeline_filter_includes_record(record, &filter))
         .map(timeline_event_from_record)
         .collect::<Vec<_>>();
 
@@ -131,6 +139,88 @@ fn select_timeline_view<'a>(
     }
 
     timelines.into_iter().next()
+}
+
+fn timeline_filter(view: &LocalTomlDocument, documents: &[LocalTomlDocument]) -> TimelineFilter {
+    let subject = view
+        .data
+        .get("subject")
+        .and_then(|subject| subject.get("entity"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let event_kinds = timeline_view_event_kinds(view).unwrap_or_default();
+    let include_related_people = view
+        .data
+        .get("filter")
+        .and_then(|filter| filter.get("include_related_people"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let include_context_events = view
+        .data
+        .get("filter")
+        .and_then(|filter| filter.get("include_context_events"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let related_entities = subject
+        .as_deref()
+        .filter(|_| include_related_people)
+        .map(|subject| related_entities_for_subject(subject, documents))
+        .unwrap_or_default();
+
+    TimelineFilter {
+        subject,
+        event_kinds,
+        related_entities,
+        include_context_events,
+    }
+}
+
+fn related_entities_for_subject(subject: &str, documents: &[LocalTomlDocument]) -> Vec<String> {
+    let mut related = Vec::new();
+    for document in documents
+        .iter()
+        .filter(|document| document.kind.as_deref() == Some("relationship"))
+    {
+        let source = document
+            .data
+            .get("source")
+            .and_then(serde_json::Value::as_str);
+        let target = document
+            .data
+            .get("target")
+            .and_then(serde_json::Value::as_str);
+        match (source, target) {
+            (Some(source), Some(target)) if source == subject => push_unique(&mut related, target),
+            (Some(source), Some(target)) if target == subject => push_unique(&mut related, source),
+            _ => {}
+        }
+    }
+    related
+}
+
+fn timeline_filter_includes_record(record: &LocalMarkdownRecord, filter: &TimelineFilter) -> bool {
+    if !filter.event_kinds.is_empty() && !filter.event_kinds.iter().any(|kind| kind == &record.kind)
+    {
+        return false;
+    }
+
+    let Some(subject) = filter.subject.as_deref() else {
+        return true;
+    };
+
+    let participant_ids = participant_entity_ids(record);
+    if participant_ids.iter().any(|id| id == subject) {
+        return true;
+    }
+
+    if participant_ids
+        .iter()
+        .any(|id| filter.related_entities.iter().any(|related| related == id))
+    {
+        return true;
+    }
+
+    filter.include_context_events && participant_ids.is_empty()
 }
 
 fn timeline_view_event_kinds(view: &LocalTomlDocument) -> Option<Vec<String>> {
@@ -172,6 +262,23 @@ fn timeline_event_from_record(record: &LocalMarkdownRecord) -> LocalTimelineEven
 
 fn is_event_record(record: &LocalMarkdownRecord) -> bool {
     record.path.starts_with("events/") || record.attributes.contains_key("participants")
+}
+
+fn participant_entity_ids(record: &LocalMarkdownRecord) -> Vec<String> {
+    json_array(record.attributes.get("participants"))
+        .into_iter()
+        .filter_map(|item| {
+            item.get("entity")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
 }
 
 fn json_array(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
@@ -246,6 +353,61 @@ mod tests {
                 .any(|event| event.id == "event:birth-example-person")
         );
         assert!(out.exists());
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn filters_timeline_by_subject_and_related_people() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-timeline-related-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        create_workspace_skeleton(
+            &temp_dir,
+            &LocalSkeletonOptions {
+                birth_date: Some("1900-01-01".to_string()),
+                ..LocalSkeletonOptions::default()
+            },
+        )
+        .expect("skeleton");
+        let world_root = temp_dir.join("worlds/default");
+        fs::write(
+            world_root.join("entities/people/morgan-example.md"),
+            "+++\nschema_version = 1\nid = \"person:morgan-example\"\nkind = \"person\"\nprimary_name = \"Morgan Example\"\n+++\n\n# Morgan\n",
+        )
+        .expect("related person");
+        fs::write(
+            world_root.join("relationships/example-association.toml"),
+            "schema_version = 1\nid = \"relationship:example-association\"\nkind = \"relationship\"\nrelationship = \"associate\"\nsource = \"person:example-person\"\ntarget = \"person:morgan-example\"\n",
+        )
+        .expect("relationship");
+        fs::write(
+            world_root.join("events/observations/related-observation.md"),
+            "+++\nschema_version = 1\nid = \"event:related-observation\"\nkind = \"residence\"\ntitle = \"Related observation\"\ntime = \"1905-01-01\"\nparticipants = [{ entity = \"person:morgan-example\", role = \"subject\" }]\nplaces = []\nassertions = []\n+++\n\n# Related\n",
+        )
+        .expect("related event");
+        fs::write(
+            world_root.join("events/observations/unrelated-observation.md"),
+            "+++\nschema_version = 1\nid = \"event:unrelated-observation\"\nkind = \"residence\"\ntitle = \"Unrelated observation\"\ntime = \"1906-01-01\"\nparticipants = []\nplaces = []\nassertions = []\n+++\n\n# Unrelated\n",
+        )
+        .expect("unrelated event");
+
+        let timeline =
+            compile_local_timeline(&world_root, Some("example-life")).expect("compile timeline");
+        let ids = timeline
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"event:birth-example-person"));
+        assert!(ids.contains(&"event:related-observation"));
+        assert!(!ids.contains(&"event:unrelated-observation"));
 
         fs::remove_dir_all(temp_dir).expect("remove temp dir");
     }

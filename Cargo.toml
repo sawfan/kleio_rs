@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-gedcom = ["dep:ged_io"]
+ged-io = ["dep:ged_io"]
 sqlite = [
     "dep:rusqlite",
     "dep:sha2",

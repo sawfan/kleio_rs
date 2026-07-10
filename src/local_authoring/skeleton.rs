@@ -225,6 +225,7 @@ pub fn create_world_layout(
         paths.moments_dir(),
         paths.other_events_dir(),
         paths.assertions_dir(),
+        paths.relationships_dir(),
         paths.sources_dir(),
         paths.media_people_dir(),
         paths.media_places_dir(),
@@ -724,7 +725,7 @@ title = "Main Family Tree"
 entity = "{}"
 
 [filter]
-relationship_kinds = ["parent", "child", "spouse"]
+relationship_kinds = ["biological-parent-child", "adoptive-parent-child", "foster-parent-child", "step-parent-child", "guardian-child", "spouse", "partner", "former-spouse", "sibling"]
 generations_up = 5
 generations_down = 3
 

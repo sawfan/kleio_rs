@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
     Attribute, DateValue, Event, EventId, EventKind, Name, Person, PersonId, Provenance,
@@ -21,6 +21,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         document.kind.as_deref() == Some("registry") || document.path == "world.toml"
     });
     let tree_view = select_tree_view(&bundle.toml_documents, view_slug);
+    let relationship_filter = tree_view.and_then(tree_view_relationship_filter);
     let tree_id = tree_view
         .and_then(|document| document.id.as_deref())
         .or_else(|| {
@@ -199,8 +200,11 @@ pub(super) fn tree_from_local_data_bundle_with_view(
                     .and_then(serde_json::Value::as_str)
             })
             .unwrap_or("associate");
-        let relationship_id =
-            tree.add_relationship(RelationshipKind::from_value(kind), source_id, target_id);
+        let relationship_kind = RelationshipKind::from_value(kind);
+        if !relationship_kind_allowed(&relationship_kind, relationship_filter.as_deref()) {
+            continue;
+        }
+        let relationship_id = tree.add_relationship(relationship_kind, source_id, target_id);
         if let Some(relationship) = tree
             .relationships
             .iter_mut()
@@ -231,6 +235,12 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         tree.main_person = Some(main_person);
     }
 
+    if let (Some(document), Some(main_person)) = (tree_view, tree.main_person)
+        && tree_view_has_root(document)
+    {
+        apply_tree_generation_filter(&mut tree, document, main_person);
+    }
+
     Ok(tree)
 }
 
@@ -251,6 +261,165 @@ fn select_tree_view<'a>(
     }
 
     trees.into_iter().next()
+}
+
+fn tree_view_relationship_filter(document: &LocalTomlDocument) -> Option<Vec<String>> {
+    document
+        .data
+        .get("filter")
+        .and_then(|filter| filter.get("relationship_kinds"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+}
+
+fn apply_tree_generation_filter(
+    tree: &mut TreeDocument,
+    document: &LocalTomlDocument,
+    root: PersonId,
+) {
+    let generations_up = tree_view_u64_filter(document, "generations_up").map(|value| value as u32);
+    let generations_down =
+        tree_view_u64_filter(document, "generations_down").map(|value| value as u32);
+    if generations_up.is_none() && generations_down.is_none() {
+        return;
+    }
+
+    let mut parents_by_child = BTreeMap::<PersonId, Vec<PersonId>>::new();
+    let mut children_by_parent = BTreeMap::<PersonId, Vec<PersonId>>::new();
+    let mut spouses_by_person = BTreeMap::<PersonId, Vec<PersonId>>::new();
+    for relationship in &tree.relationships {
+        if relationship.kind.is_parent_child() {
+            parents_by_child
+                .entry(relationship.target)
+                .or_default()
+                .push(relationship.source);
+            children_by_parent
+                .entry(relationship.source)
+                .or_default()
+                .push(relationship.target);
+        } else if matches!(
+            relationship.kind,
+            RelationshipKind::Spouse | RelationshipKind::Partner | RelationshipKind::FormerSpouse
+        ) {
+            spouses_by_person
+                .entry(relationship.source)
+                .or_default()
+                .push(relationship.target);
+            spouses_by_person
+                .entry(relationship.target)
+                .or_default()
+                .push(relationship.source);
+        }
+    }
+
+    let mut keep = BTreeSet::from([root]);
+    if let Some(generations_up) = generations_up {
+        collect_tree_relatives(root, generations_up, &parents_by_child, &mut keep);
+    }
+    if let Some(generations_down) = generations_down {
+        collect_tree_relatives(root, generations_down, &children_by_parent, &mut keep);
+    }
+    for person in keep.clone() {
+        if let Some(spouses) = spouses_by_person.get(&person) {
+            keep.extend(spouses.iter().copied());
+        }
+    }
+
+    tree.people.retain(|person| keep.contains(&person.id));
+    tree.relationships.retain(|relationship| {
+        keep.contains(&relationship.source) && keep.contains(&relationship.target)
+    });
+    tree.events.retain(|event| {
+        event
+            .participants
+            .iter()
+            .any(|person| keep.contains(person))
+    });
+    let kept_events = tree
+        .events
+        .iter()
+        .map(|event| event.id)
+        .collect::<BTreeSet<_>>();
+    for person in &mut tree.people {
+        person.events.retain(|event| kept_events.contains(event));
+    }
+    tree.layout
+        .nodes
+        .retain(|node| keep.contains(&node.person_id));
+}
+
+fn tree_view_has_root(document: &LocalTomlDocument) -> bool {
+    document
+        .data
+        .get("root")
+        .and_then(|root| root.get("entity"))
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+}
+
+fn tree_view_u64_filter(document: &LocalTomlDocument, key: &str) -> Option<u64> {
+    document
+        .data
+        .get("filter")
+        .and_then(|filter| filter.get(key))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn collect_tree_relatives(
+    root: PersonId,
+    max_depth: u32,
+    edges: &BTreeMap<PersonId, Vec<PersonId>>,
+    keep: &mut BTreeSet<PersonId>,
+) {
+    let mut queue = VecDeque::from([(root, 0)]);
+    let mut visited = BTreeSet::from([root]);
+    while let Some((person, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let Some(next_people) = edges.get(&person) else {
+            continue;
+        };
+        for next in next_people {
+            if visited.insert(*next) {
+                keep.insert(*next);
+                queue.push_back((*next, depth + 1));
+            }
+        }
+    }
+}
+
+fn relationship_kind_allowed(kind: &RelationshipKind, filter: Option<&[String]>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+
+    filter
+        .iter()
+        .any(|value| relationship_kind_matches(kind, value))
+}
+
+fn relationship_kind_matches(kind: &RelationshipKind, filter_value: &str) -> bool {
+    let normalized = filter_value.trim();
+    if normalized == kind.as_value() {
+        return true;
+    }
+
+    match normalized {
+        "parent" | "child" | "parent-child" => kind.is_parent_child(),
+        "partner-or-spouse" => matches!(
+            kind,
+            RelationshipKind::Spouse | RelationshipKind::Partner | RelationshipKind::FormerSpouse
+        ),
+        _ => false,
+    }
 }
 
 fn markdown_title(record: &LocalMarkdownRecord) -> Option<String> {
