@@ -40,17 +40,17 @@ pub fn person_life_relations(
     boundary_relations_for_composite(life_event_id, birth_event_id, death_event_id)
 }
 
-pub fn find_person_birth_event<'a>(
-    events: &'a [TimelineEvent],
+pub fn find_person_birth_event(
+    events: &[TimelineEvent],
     person_id: PersonId,
-) -> Option<&'a TimelineEvent> {
+) -> Option<&TimelineEvent> {
     find_person_event_by_type(events, person_id, GENEALOGY_BIRTH_TYPE)
 }
 
-pub fn find_person_death_event<'a>(
-    events: &'a [TimelineEvent],
+pub fn find_person_death_event(
+    events: &[TimelineEvent],
     person_id: PersonId,
-) -> Option<&'a TimelineEvent> {
+) -> Option<&TimelineEvent> {
     find_person_event_by_type(events, person_id, GENEALOGY_DEATH_TYPE)
 }
 

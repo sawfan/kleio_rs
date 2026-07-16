@@ -137,6 +137,9 @@ impl ImportCandidateId {
     }
 }
 
+// Keep candidate items stored inline so serde/rkyv representations and the public
+// enum API remain stable across import-batch persistence boundaries.
+#[allow(clippy::large_enum_variant)]
 #[derive(
     Debug, Clone, PartialEq, Archive, Serialize, Deserialize, serde::Serialize, serde::Deserialize,
 )]
