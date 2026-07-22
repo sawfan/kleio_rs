@@ -9,6 +9,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 use crate::attribution::Provenance;
 use crate::entity::Entity;
 use crate::event::{EventRelation, TimelineEvent};
+use crate::event_collection::EventCollection;
 use crate::event_type::DomainProfile;
 use crate::pack::{EventPack, PackKind, PackMetadata, SourceRecord};
 
@@ -147,6 +148,7 @@ pub enum ImportCandidateItem {
     DomainProfile(DomainProfile),
     Entity(Entity),
     Event(TimelineEvent),
+    EventCollection(EventCollection),
     EventRelation(EventRelation),
     Source(SourceRecord),
     TagValue(crate::attribution::Tag),
@@ -296,6 +298,9 @@ impl ImportBatch {
                 }
                 ImportCandidateItem::Entity(entity) => pack.entities.push(entity.clone()),
                 ImportCandidateItem::Event(event) => pack.events.push(event.clone()),
+                ImportCandidateItem::EventCollection(collection) => {
+                    pack.event_collections.push(collection.clone())
+                }
                 ImportCandidateItem::EventRelation(relation) => {
                     pack.event_relations.push(relation.clone())
                 }
@@ -311,7 +316,10 @@ impl ImportBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventId, EventTypeId, PackId};
+    use crate::{
+        EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember, EventId,
+        EventTypeId, PackId,
+    };
 
     #[test]
     fn batch_materializes_only_accepted_candidates_into_pack() {
@@ -319,6 +327,20 @@ mod tests {
             ImportBatchId::new("import:1"),
             "journal.json",
             ImportSourceKind::Json,
+        );
+        batch.candidates.push(
+            ImportCandidate::add(
+                ImportCandidateId::new("candidate:event-collection:1"),
+                ImportCandidateItem::EventCollection(
+                    EventCollection::new(
+                        EventCollectionId::new("collection:accepted"),
+                        "Accepted collection",
+                        EventCollectionKind::Set,
+                    )
+                    .with_member(EventCollectionMember::new(EventId(1))),
+                ),
+            )
+            .accepted(),
         );
         batch.candidates.push(
             ImportCandidate::add(
@@ -348,9 +370,11 @@ mod tests {
             PackKind::ImportedDataset,
         );
 
-        assert_eq!(batch.accepted_count(), 1);
+        assert_eq!(batch.accepted_count(), 2);
         assert_eq!(pack.events.len(), 1);
         assert_eq!(pack.events[0].id, EventId(1));
+        assert_eq!(pack.event_collections.len(), 1);
+        assert_eq!(pack.event_collections[0].id.as_str(), "collection:accepted");
     }
 
     #[test]

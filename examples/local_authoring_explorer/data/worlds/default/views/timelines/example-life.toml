@@ -1,0 +1,12 @@
+schema_version = 1
+id = "timeline:example-life"
+kind = "timeline-view"
+title = "Example life timeline"
+
+[subject]
+entity = "person:alex-example"
+
+[filter]
+event_kinds = ["birth", "residence", "marriage", "death"]
+include_related_people = true
+include_context_events = false

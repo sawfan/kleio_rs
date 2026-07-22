@@ -146,6 +146,57 @@ fn compiles_private_tree_document_from_person_records_and_relationships() {
 }
 
 #[test]
+fn compiles_local_event_collections_into_timeline_projection() {
+    let temp_dir = test_temp_dir("timeline-collections");
+    fs::create_dir_all(temp_dir.join("events/observations")).expect("events dir");
+    fs::create_dir_all(temp_dir.join("collections")).expect("collections dir");
+    fs::write(
+        temp_dir.join("events/observations/first.md"),
+        "+++\nid = \"event:first\"\nkind = \"observation\"\ntitle = \"First event\"\ndate = 2026-01-01\n+++\n\n# First\n",
+    )
+    .expect("first event");
+    fs::write(
+        temp_dir.join("events/observations/second.md"),
+        "+++\nid = \"event:second\"\nkind = \"observation\"\ntitle = \"Second event\"\ndate = 2026-01-02\n+++\n\n# Second\n",
+    )
+    .expect("second event");
+    fs::write(
+        temp_dir.join("collections/comparison.toml"),
+        "schema_version = 1\nid = \"collection:comparison\"\nkind = \"event-collection\"\ntitle = \"Comparison\"\ncollection_kind = \"set\"\n\n[[members]]\nevent = \"event:first\"\nlabel = \"First\"\nrole = \"reference\"\n\n[[members]]\nevent = \"event:second\"\nlabel = \"Second\"\nrole = \"comparison\"\n",
+    )
+    .expect("collection");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(timeline.events.len(), 2);
+    assert_eq!(timeline.collections.len(), 1);
+    assert_eq!(timeline.collections[0].id, "collection:comparison");
+    assert_eq!(timeline.collections[0].members.len(), 2);
+    assert_eq!(timeline.collections[0].members[0].event, "event:first");
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_local_event_collection_missing_member() {
+    let temp_dir = test_temp_dir("collection-missing-member");
+    fs::create_dir_all(temp_dir.join("collections")).expect("collections dir");
+    fs::write(
+        temp_dir.join("collections/missing.toml"),
+        "schema_version = 1\nid = \"collection:missing\"\nkind = \"event-collection\"\ntitle = \"Missing\"\ncollection_kind = \"set\"\n\n[[members]]\nevent = \"event:missing\"\n",
+    )
+    .expect("collection");
+
+    let err = compile_local_data(&temp_dir).expect_err("missing collection member should fail");
+    assert!(
+        err.to_string().contains("event:missing"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn writes_private_tree_json() {
     let temp_dir = test_temp_dir("write-tree-json");
     fs::create_dir_all(temp_dir.join("records")).expect("records dir");
@@ -192,16 +243,16 @@ fn rejects_missing_event_assertion_reference() {
 }
 
 #[test]
-fn rejects_missing_assertion_subject_reference() {
-    let temp_dir = test_temp_dir("missing-assertion-subject");
+fn rejects_missing_assertion_target_reference() {
+    let temp_dir = test_temp_dir("missing-assertion-target");
     fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
     fs::write(
         temp_dir.join("assertions/example-claim.md"),
-        "+++\nid = \"assertion:example-claim\"\nkind = \"identity\"\nsubject = \"person:missing\"\npredicate = \"has_name\"\nvalue = \"Missing Example\"\n+++\n\n# Note\n",
+        "+++\nid = \"assertion:example-claim\"\nkind = \"identity\"\ntarget = \"person:missing#name\"\nvalue = \"Missing Example\"\n+++\n\n# Note\n",
     )
     .expect("assertion");
 
-    let err = compile_local_data(&temp_dir).expect_err("missing subject should fail");
+    let err = compile_local_data(&temp_dir).expect_err("missing target should fail");
     assert!(
         err.to_string().contains("person:missing"),
         "unexpected error: {err}"
@@ -327,25 +378,48 @@ fn rejects_missing_timeline_view_subject_reference() {
 }
 
 #[test]
-fn rejects_assertion_missing_predicate() {
-    let temp_dir = test_temp_dir("assertion-missing-predicate");
-    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+fn rejects_assertion_missing_target() {
+    let temp_dir = test_temp_dir("assertion-missing-target");
     fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
     fs::write(
-        temp_dir.join("entities/people/person-alex.md"),
-        "+++\nid = \"person:alex\"\nkind = \"person\"\nprimary_name = \"Alex\"\n+++\n",
-    )
-    .expect("person");
-    fs::write(
-        temp_dir.join("assertions/missing-predicate.md"),
-        "+++\nid = \"assertion:missing-predicate\"\nkind = \"identity\"\nsubject = \"person:alex\"\nvalue = \"Alex\"\n+++\n",
+        temp_dir.join("assertions/missing-target.md"),
+        "+++\nid = \"assertion:missing-target\"\nkind = \"identity\"\nvalue = \"Alex\"\n+++\n",
     )
     .expect("assertion");
 
-    let err = compile_local_data(&temp_dir).expect_err("missing predicate should fail");
+    let err = compile_local_data(&temp_dir).expect_err("missing target should fail");
     assert!(
-        err.to_string().contains("predicate"),
+        err.to_string().contains("target"),
         "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn allows_event_support_assertion_without_value() {
+    let temp_dir = test_temp_dir("assertion-support-no-value");
+    fs::create_dir_all(temp_dir.join("events/observations")).expect("events dir");
+    fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
+    fs::write(
+        temp_dir.join("events/observations/example.md"),
+        "+++\nid = \"event:example\"\nkind = \"observation\"\ntitle = \"Example\"\nassertions = [\"assertion:example-support\"]\n+++\n\n# Example\n",
+    )
+    .expect("event");
+    fs::write(
+        temp_dir.join("assertions/example-support.md"),
+        "+++\nid = \"assertion:example-support\"\nkind = \"event-support\"\ntarget = \"event:example#date\"\nconfidence = \"medium\"\n+++\n\n# Support\n",
+    )
+    .expect("assertion");
+
+    let bundle =
+        compile_local_data(&temp_dir).expect("targeted event date support without value is valid");
+
+    assert!(
+        bundle
+            .markdown_records
+            .iter()
+            .any(|record| record.id == "assertion:example-support")
     );
 
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
@@ -363,7 +437,7 @@ fn rejects_assertion_missing_source_reference() {
     .expect("person");
     fs::write(
         temp_dir.join("assertions/missing-source.md"),
-        "+++\nid = \"assertion:missing-source\"\nkind = \"identity\"\nsubject = \"person:alex\"\npredicate = \"has_name\"\nvalue = \"Alex\"\nsources = [\"source:missing\"]\n+++\n",
+        "+++\nid = \"assertion:missing-source\"\nkind = \"identity\"\ntarget = \"person:alex#name\"\nvalue = \"Alex\"\nsources = [\"source:missing\"]\n+++\n",
     )
     .expect("assertion");
 

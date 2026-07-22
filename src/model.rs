@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::attribution::Provenance;
+use crate::genealogy_event::{GenealogyEvent, GenealogyEventKind};
 
 // -----------------------------------------------------------------------------
 // Core model types
@@ -123,9 +124,8 @@ pub enum Sex {
 
 /// Precision carried by source date/time values.
 ///
-/// Wikidata represents date/time precision separately from the timestamp string
-/// itself. Keeping that precision in the core model prevents lossy conversions
-/// such as treating a year-only value as January 1st of that year.
+/// Keeping precision explicit prevents lossy conversions such as treating a
+/// year-only value as January 1st of that year.
 #[derive(
     Debug,
     Clone,
@@ -143,11 +143,8 @@ pub enum Sex {
 )]
 #[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub enum DatePrecision {
-    /// A broad millennium bucket, as used by Wikidata precision `6`.
     Millennium,
-    /// A broad century bucket, as used by Wikidata precision `7`.
     Century,
-    /// A decade bucket, as used by Wikidata precision `8`.
     Decade,
     Year,
     Month,
@@ -158,26 +155,6 @@ pub enum DatePrecision {
 }
 
 impl DatePrecision {
-    /// Convert a Wikidata time precision code into Kleio's precision enum.
-    ///
-    /// Wikidata precision values relevant to historical/person data are:
-    /// `6 = millennium`, `7 = century`, `8 = decade`, `9 = year`,
-    /// `10 = month`, `11 = day`, `12 = hour`, `13 = minute`, `14 = second`.
-    pub fn from_wikidata_precision(value: i32) -> Option<Self> {
-        match value {
-            6 => Some(Self::Millennium),
-            7 => Some(Self::Century),
-            8 => Some(Self::Decade),
-            9 => Some(Self::Year),
-            10 => Some(Self::Month),
-            11 => Some(Self::Day),
-            12 => Some(Self::Hour),
-            13 => Some(Self::Minute),
-            14 => Some(Self::Second),
-            _ => None,
-        }
-    }
-
     pub fn includes_month(self) -> bool {
         self >= Self::Month
     }
@@ -200,9 +177,6 @@ impl DatePrecision {
 }
 
 /// Calendar model attached to a historical date.
-///
-/// Wikidata commonly uses Gregorian (`Q1985727`) or Julian (`Q1985786`) calendar
-/// models. Other model URIs are preserved losslessly.
 #[derive(
     Debug,
     Clone,
@@ -223,31 +197,6 @@ pub enum CalendarModel {
     Gregorian,
     Julian,
     Other(String),
-}
-
-impl CalendarModel {
-    pub const WIKIDATA_GREGORIAN_URI: &'static str = "http://www.wikidata.org/entity/Q1985727";
-    pub const WIKIDATA_JULIAN_URI: &'static str = "http://www.wikidata.org/entity/Q1985786";
-
-    pub fn from_wikidata_calendar_model(value: &str) -> Self {
-        match value.trim() {
-            Self::WIKIDATA_GREGORIAN_URI
-            | "https://www.wikidata.org/entity/Q1985727"
-            | "Q1985727" => Self::Gregorian,
-            Self::WIKIDATA_JULIAN_URI | "https://www.wikidata.org/entity/Q1985786" | "Q1985786" => {
-                Self::Julian
-            }
-            other => Self::Other(other.to_string()),
-        }
-    }
-
-    pub fn as_wikidata_calendar_model(&self) -> Option<&str> {
-        match self {
-            Self::Gregorian => Some(Self::WIKIDATA_GREGORIAN_URI),
-            Self::Julian => Some(Self::WIKIDATA_JULIAN_URI),
-            Self::Other(value) => Some(value.as_str()),
-        }
-    }
 }
 
 /// A historical date/time with explicit precision and calendar.
@@ -276,11 +225,9 @@ pub struct HistoricalDate {
     pub precision: DatePrecision,
     pub calendar: CalendarModel,
 
-    /// Original Wikidata time string, when this value came from Wikidata.
-    ///
-    /// Non-Wikidata importers can leave this as `None` and use
-    /// `DateValue::original` for their source text.
-    pub raw_wikidata_time: Option<String>,
+    /// Optional source timestamp string, when a historical date was parsed from a
+    /// source format that carries a machine-readable timestamp.
+    pub source_time: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,11 +243,11 @@ impl std::fmt::Display for HistoricalDateParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyTime => write!(f, "empty time value"),
-            Self::MissingSign => write!(f, "Wikidata time value must begin with '+' or '-'"),
+            Self::MissingSign => write!(f, "time value must begin with '+' or '-'"),
             Self::InvalidYear => write!(f, "invalid year in time value"),
             Self::InvalidComponent(name) => write!(f, "invalid {name} in time value"),
             Self::UnsupportedPrecision(value) => {
-                write!(f, "unsupported Wikidata precision {value}")
+                write!(f, "unsupported time precision {value}")
             }
         }
     }
@@ -319,91 +266,8 @@ impl HistoricalDate {
             second: None,
             precision,
             calendar,
-            raw_wikidata_time: None,
+            source_time: None,
         }
-    }
-
-    /// Build a `HistoricalDate` from a Wikidata time triple.
-    ///
-    /// `time` is the raw Wikidata time string (for example
-    /// `+1983-10-29T00:00:00Z`), `precision` is the numeric Wikidata precision,
-    /// and `calendar_model` is the Wikidata calendar URI/entity ID.
-    ///
-    /// Components more detailed than the declared precision are deliberately
-    /// discarded, so `+1983-01-01T00:00:00Z` with precision `9` remains a
-    /// year-only `1983` value.
-    pub fn from_wikidata_time(
-        time: &str,
-        precision: i32,
-        calendar_model: &str,
-    ) -> Result<Self, HistoricalDateParseError> {
-        let precision = DatePrecision::from_wikidata_precision(precision)
-            .ok_or(HistoricalDateParseError::UnsupportedPrecision(precision))?;
-        let raw = time.trim();
-        if raw.is_empty() {
-            return Err(HistoricalDateParseError::EmptyTime);
-        }
-
-        let (sign, rest) = raw.split_at(1);
-        let sign = match sign {
-            "+" => 1,
-            "-" => -1,
-            _ => return Err(HistoricalDateParseError::MissingSign),
-        };
-
-        let (date_part, time_part) = rest.split_once('T').unwrap_or((rest, ""));
-        let mut date_fields = date_part.split('-');
-        let year_abs: i32 = date_fields
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or(HistoricalDateParseError::InvalidYear)?
-            .parse()
-            .map_err(|_| HistoricalDateParseError::InvalidYear)?;
-        let year = year_abs * sign;
-
-        let parsed_month = date_fields
-            .next()
-            .map(|s| parse_u8_component(s, "month", 1, 12))
-            .transpose()?;
-        let parsed_day = date_fields
-            .next()
-            .map(|s| parse_u8_component(s, "day", 1, 31))
-            .transpose()?;
-
-        let mut time_fields = time_part.trim_end_matches('Z').split(':');
-        let parsed_hour = time_fields
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(|s| parse_u8_component(s, "hour", 0, 23))
-            .transpose()?;
-        let parsed_minute = time_fields
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(|s| parse_u8_component(s, "minute", 0, 59))
-            .transpose()?;
-        let parsed_second = time_fields
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(|s| parse_u8_component(s, "second", 0, 59))
-            .transpose()?;
-
-        Ok(Self {
-            year,
-            month: precision.includes_month().then_some(parsed_month).flatten(),
-            day: precision.includes_day().then_some(parsed_day).flatten(),
-            hour: precision.includes_hour().then_some(parsed_hour).flatten(),
-            minute: precision
-                .includes_minute()
-                .then_some(parsed_minute)
-                .flatten(),
-            second: precision
-                .includes_second()
-                .then_some(parsed_second)
-                .flatten(),
-            precision,
-            calendar: CalendarModel::from_wikidata_calendar_model(calendar_model),
-            raw_wikidata_time: Some(raw.to_string()),
-        })
     }
 
     /// Year range used for coarse indexing/searching.
@@ -472,21 +336,6 @@ impl HistoricalDate {
             ),
         }
     }
-}
-
-fn parse_u8_component(
-    value: &str,
-    name: &'static str,
-    min: u8,
-    max: u8,
-) -> Result<u8, HistoricalDateParseError> {
-    let parsed: u8 = value
-        .parse()
-        .map_err(|_| HistoricalDateParseError::InvalidComponent(name))?;
-    if parsed < min || parsed > max {
-        return Err(HistoricalDateParseError::InvalidComponent(name));
-    }
-    Ok(parsed)
 }
 
 fn bucket_start(year: i32, bucket_size: i32) -> i32 {
@@ -599,7 +448,7 @@ pub struct DateValue {
     /// Precision-aware parsed historical date/time, when available.
     ///
     /// Importers should prefer this over coercing partial dates into concrete
-    /// calendar days. For example, a Wikidata value with year precision should
+    /// calendar days. For example, a source value with year precision should
     /// be represented as `HistoricalDate { precision: DatePrecision::Year, .. }`
     /// rather than as January 1st.
     pub historical: Option<HistoricalDate>,
@@ -626,7 +475,7 @@ impl DateValue {
 
     pub fn from_historical(historical: HistoricalDate, provenance: Provenance) -> Self {
         let original = historical
-            .raw_wikidata_time
+            .source_time
             .clone()
             .unwrap_or_else(|| historical.display());
         let range = Some(historical.year_range());
@@ -639,78 +488,12 @@ impl DateValue {
         }
     }
 
-    pub fn from_wikidata_time(
-        time: &str,
-        precision: i32,
-        calendar_model: &str,
-        provenance: Provenance,
-    ) -> Result<Self, HistoricalDateParseError> {
-        let historical = HistoricalDate::from_wikidata_time(time, precision, calendar_model)?;
-        Ok(Self::from_historical(historical, provenance))
-    }
-
     pub fn display(&self) -> String {
         self.historical
             .as_ref()
             .map(HistoricalDate::display)
             .unwrap_or_else(|| self.original.clone())
     }
-}
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Archive,
-    Serialize,
-    Deserialize,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub enum EventKind {
-    Birth,
-    Death,
-    Marriage,
-    Baptism,
-    Burial,
-    Residence,
-    Occupation,
-
-    /// Fallback for source-specific kinds.
-    Other(String),
-}
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Archive,
-    Serialize,
-    Deserialize,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub struct Event {
-    pub id: EventId,
-    pub kind: EventKind,
-
-    pub date: Option<DateValue>,
-
-    /// Source-specific time string (may be local time).
-    pub time: Option<String>,
-
-    /// Source-specific time zone string.
-    pub time_zone: Option<String>,
-
-    pub place: Option<PlaceId>,
-
-    pub description: Option<String>,
-
-    pub participants: Vec<PersonId>,
-
-    pub provenance: Provenance,
 }
 
 #[derive(
@@ -823,7 +606,7 @@ pub struct PersonRelations {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenealogyIndex {
     pub people: Vec<Person>,
-    pub events: Vec<Event>,
+    pub events: Vec<GenealogyEvent>,
     pub families: Vec<Family>,
     pub places: Vec<Place>,
     pub notes: Vec<Note>,
@@ -857,7 +640,7 @@ pub struct DateIndexArchive {
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 pub struct GenealogyArchive {
     pub people: Vec<Person>,
-    pub events: Vec<Event>,
+    pub events: Vec<GenealogyEvent>,
     pub families: Vec<Family>,
     pub places: Vec<Place>,
     pub notes: Vec<Note>,
@@ -908,7 +691,7 @@ impl GenealogyIndex {
     /// Build derived indexes. Assumes IDs are unique.
     pub fn build(
         people: Vec<Person>,
-        events: Vec<Event>,
+        events: Vec<GenealogyEvent>,
         families: Vec<Family>,
         places: Vec<Place>,
         notes: Vec<Note>,
@@ -962,14 +745,14 @@ impl GenealogyIndex {
             let idx_u32 = idx as u32;
 
             match &event.kind {
-                EventKind::Birth => event_index.insert("birth", idx_u32),
-                EventKind::Death => event_index.insert("death", idx_u32),
-                EventKind::Marriage => event_index.insert("marriage", idx_u32),
-                EventKind::Baptism => event_index.insert("baptism", idx_u32),
-                EventKind::Burial => event_index.insert("burial", idx_u32),
-                EventKind::Residence => event_index.insert("residence", idx_u32),
-                EventKind::Occupation => event_index.insert("occupation", idx_u32),
-                EventKind::Other(s) => {
+                GenealogyEventKind::Birth => event_index.insert("birth", idx_u32),
+                GenealogyEventKind::Death => event_index.insert("death", idx_u32),
+                GenealogyEventKind::Marriage => event_index.insert("marriage", idx_u32),
+                GenealogyEventKind::Baptism => event_index.insert("baptism", idx_u32),
+                GenealogyEventKind::Burial => event_index.insert("burial", idx_u32),
+                GenealogyEventKind::Residence => event_index.insert("residence", idx_u32),
+                GenealogyEventKind::Occupation => event_index.insert("occupation", idx_u32),
+                GenealogyEventKind::Other(s) => {
                     for token in SearchIndex::tokenize(s) {
                         event_index.insert(token, idx_u32);
                     }
@@ -1147,62 +930,5 @@ pub fn parse_year_from_genealogy_date(s: &str) -> Option<i32> {
         digits.parse().ok()
     } else {
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wikidata_year_precision_does_not_invent_month_or_day() {
-        let date = HistoricalDate::from_wikidata_time(
-            "+1983-01-01T00:00:00Z",
-            9,
-            CalendarModel::WIKIDATA_GREGORIAN_URI,
-        )
-        .expect("valid Wikidata year-precision date");
-
-        assert_eq!(date.year, 1983);
-        assert_eq!(date.month, None);
-        assert_eq!(date.day, None);
-        assert_eq!(date.precision, DatePrecision::Year);
-        assert_eq!(date.display(), "1983");
-        assert_eq!(
-            date.year_range(),
-            DateRange::from_years(Some(1983), Some(1983))
-        );
-    }
-
-    #[test]
-    fn wikidata_day_precision_keeps_month_and_day() {
-        let date = HistoricalDate::from_wikidata_time("+1983-10-29T00:00:00Z", 11, "Q1985786")
-            .expect("valid Wikidata day-precision date");
-
-        assert_eq!(date.year, 1983);
-        assert_eq!(date.month, Some(10));
-        assert_eq!(date.day, Some(29));
-        assert_eq!(date.precision, DatePrecision::Day);
-        assert_eq!(date.calendar, CalendarModel::Julian);
-        assert_eq!(date.display(), "1983-10-29");
-    }
-
-    #[test]
-    fn wikidata_century_precision_indexes_the_century_bucket() {
-        let date = HistoricalDate::from_wikidata_time(
-            "+1800-01-01T00:00:00Z",
-            7,
-            CalendarModel::WIKIDATA_GREGORIAN_URI,
-        )
-        .expect("valid Wikidata century-precision date");
-
-        assert_eq!(date.precision, DatePrecision::Century);
-        assert_eq!(date.month, None);
-        assert_eq!(date.day, None);
-        assert_eq!(date.display(), "1800s");
-        assert_eq!(
-            date.year_range(),
-            DateRange::from_years(Some(1800), Some(1899))
-        );
     }
 }

@@ -1,8 +1,8 @@
-//! Generic event records for timelines, journals, and domain projections.
+//! Canonical event records for timelines, journals, import projections, and domain projections.
 //!
-//! This module does not replace the existing genealogy `model::Event` yet. It
-//! provides the domain-profile-aware event shape that new Kleio timeline work
-//! can use while older GEDCOM/genealogy code continues to compile unchanged.
+//! `Event` is an alias for `TimelineEvent`; new code should treat this shape as
+//! Kleio's primary event primitive. Genealogy-specific archive events live in
+//! `genealogy_event` and are adapter/projection types, not the core event model.
 
 use rkyv::{Archive, Deserialize, Serialize};
 
@@ -370,6 +370,9 @@ pub struct TimelineEvent {
     pub tags: Vec<Tag>,
     pub provenance: Provenance,
 }
+
+/// Canonical Kleio event primitive.
+pub type Event = TimelineEvent;
 
 impl TimelineEvent {
     pub fn new(id: EventId, type_ref: EventTypeId, title: impl Into<String>) -> Self {

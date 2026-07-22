@@ -1,0 +1,8 @@
+schema_version = 1
+id = "relationship:alex-morgan-example"
+kind = "relationship"
+title = "Alex and Morgan example relationship"
+relationship = "sibling"
+source = "person:alex-example"
+target = "person:morgan-example"
+sources = ["source:example-notebook"]

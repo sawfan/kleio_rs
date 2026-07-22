@@ -53,7 +53,10 @@ pub fn import_event_pack_toml(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventId, EventTypeId, PackId, TimelineEvent};
+    use crate::{
+        EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember, EventId,
+        EventTypeId, PackId, TimelineEvent,
+    };
 
     #[test]
     fn event_pack_toml_round_trips_and_imports_as_candidates() {
@@ -66,6 +69,14 @@ mod tests {
             EventTypeId::new("history.event"),
             "A hand-authored event",
         ));
+        pack.event_collections.push(
+            EventCollection::new(
+                EventCollectionId::new("collection:small-history"),
+                "Small history collection",
+                EventCollectionKind::Set,
+            )
+            .with_member(EventCollectionMember::new(EventId(1))),
+        );
 
         let toml_text = event_pack_to_toml_pretty(&pack).expect("serialize event pack toml");
         let imported = import_event_pack_toml("small-history.toml", &toml_text)
@@ -73,11 +84,16 @@ mod tests {
 
         assert_eq!(imported.metadata.title, "Small History");
         assert_eq!(imported.batch.records.len(), 1);
-        assert_eq!(imported.batch.accepted_count(), 1);
+        assert_eq!(imported.batch.accepted_count(), 2);
 
         let materialized = imported.materialize();
         assert_eq!(materialized.kind, PackKind::HistoricalTimeline);
         assert_eq!(materialized.events.len(), 1);
         assert_eq!(materialized.events[0].id, EventId(1));
+        assert_eq!(materialized.event_collections.len(), 1);
+        assert_eq!(
+            materialized.event_collections[0].id.as_str(),
+            "collection:small-history"
+        );
     }
 }

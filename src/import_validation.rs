@@ -6,9 +6,11 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
+use crate::event::TimelineEvent;
 use crate::event_type::DomainProfile;
 use crate::event_validation::{
-    EventValidationIssue, ValidationSeverity, validate_domain_profile, validate_timeline_event,
+    EventValidationIssue, ValidationSeverity, validate_domain_profile, validate_event_collections,
+    validate_timeline_event,
 };
 use crate::import_batch::{
     ImportBatch, ImportCandidate, ImportCandidateItem, ImportCandidateStatus,
@@ -46,10 +48,16 @@ impl ImportCandidateValidation {
 
 pub fn validate_import_batch(batch: &ImportBatch) -> Vec<ImportCandidateValidation> {
     let profiles = import_batch_domain_profiles(batch);
+    let accepted_events = import_batch_accepted_events(batch);
     let mut validations = Vec::new();
 
     for candidate in &batch.candidates {
-        let issues = validate_import_candidate(candidate, &profiles);
+        let issues = match &candidate.item {
+            ImportCandidateItem::EventCollection(collection) => {
+                validate_event_collections(std::slice::from_ref(collection), &accepted_events)
+            }
+            _ => validate_import_candidate(candidate, &profiles),
+        };
         if !issues.is_empty() {
             validations.push(ImportCandidateValidation {
                 candidate_id: candidate.id.clone(),
@@ -68,6 +76,7 @@ pub fn validate_import_candidate(
     match &candidate.item {
         ImportCandidateItem::DomainProfile(profile) => validate_domain_profile(profile),
         ImportCandidateItem::Event(event) => validate_timeline_event(event, profiles),
+        ImportCandidateItem::EventCollection(_) => Vec::new(),
         ImportCandidateItem::Entity(_)
         | ImportCandidateItem::EventRelation(_)
         | ImportCandidateItem::Source(_)
@@ -112,12 +121,23 @@ pub fn import_batch_domain_profiles(batch: &ImportBatch) -> Vec<DomainProfile> {
         .collect()
 }
 
+pub fn import_batch_accepted_events(batch: &ImportBatch) -> Vec<TimelineEvent> {
+    batch
+        .accepted_candidates()
+        .filter_map(|candidate| match &candidate.item {
+            ImportCandidateItem::Event(event) => Some(event.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        EventId, EventTypeId, ImportCandidateId, ImportSourceKind, TimelineEvent,
-        genealogy_domain_profile,
+        DateValue, EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember,
+        EventId, EventTypeId, ImportCandidateId, ImportSourceKind, Provenance, TimeSpec,
+        TimelineEvent, genealogy_domain_profile, journal_domain_profile,
     };
 
     #[test]
@@ -153,6 +173,62 @@ mod tests {
         assert_eq!(
             validations[0].candidate_id.as_str(),
             "candidate:event:birth"
+        );
+    }
+
+    #[test]
+    fn import_validation_reports_collection_missing_event_refs() {
+        let mut batch = ImportBatch::new(
+            crate::ImportBatchId::new("import:collection-validation"),
+            "manual",
+            ImportSourceKind::Manual,
+        );
+        batch.candidates.push(
+            ImportCandidate::add(
+                ImportCandidateId::new("candidate:profile:journal"),
+                ImportCandidateItem::DomainProfile(journal_domain_profile()),
+            )
+            .accepted(),
+        );
+        batch.candidates.push(
+            ImportCandidate::add(
+                ImportCandidateId::new("candidate:event:known"),
+                ImportCandidateItem::Event(
+                    TimelineEvent::new(
+                        EventId(1),
+                        EventTypeId::new("journal.entry"),
+                        "Known event",
+                    )
+                    .with_time(TimeSpec::from_date_value(
+                        DateValue::from_original("2026", Provenance::default()),
+                    )),
+                ),
+            )
+            .accepted(),
+        );
+        batch.candidates.push(
+            ImportCandidate::add(
+                ImportCandidateId::new("candidate:collection:missing"),
+                ImportCandidateItem::EventCollection(
+                    EventCollection::new(
+                        EventCollectionId::new("collection:missing"),
+                        "Missing refs",
+                        EventCollectionKind::Set,
+                    )
+                    .with_member(EventCollectionMember::new(EventId(1)))
+                    .with_member(EventCollectionMember::new(EventId(99))),
+                ),
+            )
+            .accepted(),
+        );
+
+        let validations = validate_import_batch(&batch);
+
+        assert_eq!(validations.len(), 1);
+        assert!(validations[0].has_errors());
+        assert_eq!(
+            validations[0].candidate_id.as_str(),
+            "candidate:collection:missing"
         );
     }
 

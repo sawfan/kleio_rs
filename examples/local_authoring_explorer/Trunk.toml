@@ -1,0 +1,12 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+watch = ["index.html", "src", "data/kleio.toml", "data/worlds/default"]
+ignore = ["data/worlds/default/build"]
+
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["scripts/build_local_data.sh"]

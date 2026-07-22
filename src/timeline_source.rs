@@ -14,6 +14,10 @@ use crate::event::{
     EventBoundaryKind, EventCompositionKind, EventParticipant, EventRelation, EventRelationKind,
     EventTemporalKind, TimeSpec, TimelineEvent,
 };
+use crate::event_collection::{
+    EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember,
+    EventSequenceOrder,
+};
 use crate::event_type::{EventTypeId, genealogy_domain_profile};
 use crate::model::{DateValue, EventId, PersonId};
 use crate::pack::{EventPack, PackId, PackKind, PackMetadata};
@@ -279,7 +283,7 @@ pub fn event_pack_from_timeline_source(source: &TimelineSource) -> EventPack {
         .id
         .clone()
         .unwrap_or_else(|| stable_pack_id_from_title(&source.meta.title));
-    let mut metadata = PackMetadata::new(PackId::new(pack_id), source.meta.title.clone());
+    let mut metadata = PackMetadata::new(PackId::new(pack_id.clone()), source.meta.title.clone());
     metadata.description = source.meta.description.clone();
 
     let mut builder = EventPackBuilder::new(metadata, source_pack_kind(source.meta.kind));
@@ -290,6 +294,7 @@ pub fn event_pack_from_timeline_source(source: &TimelineSource) -> EventPack {
         compiled_items.push(add_source_item_to_pack(&mut builder, item, person_id));
     }
     add_life_containment_relations(&mut builder, &compiled_items);
+    add_source_sequence_collection(&mut builder, &source.meta.title, &pack_id, &compiled_items);
 
     builder.into_pack()
 }
@@ -414,6 +419,36 @@ fn add_life_containment_relations(
             EventRelationKind::OccursWithin,
         ));
     }
+}
+
+fn add_source_sequence_collection(
+    builder: &mut EventPackBuilder,
+    title: &str,
+    pack_id: &str,
+    compiled_items: &[CompiledSourceItem],
+) {
+    if compiled_items.is_empty() {
+        return;
+    }
+
+    let mut collection = EventCollection::new(
+        EventCollectionId::new(format!("{pack_id}:collection:source-sequence")),
+        format!("{title} sequence"),
+        EventCollectionKind::Sequence(EventSequenceOrder::ManualThenChronological),
+    )
+    .with_description(
+        "Sequence generated from the authored timeline items. Boundary events remain modeled through event relations instead of collection membership.",
+    );
+
+    for (index, item) in compiled_items.iter().enumerate() {
+        collection.push_member(
+            EventCollectionMember::new(item.event_id)
+                .with_role(if item.is_period { "period" } else { "event" })
+                .with_ordinal((index as i32 + 1) * 10),
+        );
+    }
+
+    builder.add_event_collection(collection);
 }
 
 fn source_item_event_draft(
@@ -890,6 +925,20 @@ mod tests {
             pack.events
                 .iter()
                 .any(|event| event.time.display() == "2013 to present")
+        );
+        assert_eq!(pack.event_collections.len(), 1);
+        let sequence = pack
+            .event_collections
+            .first()
+            .expect("timeline source creates a collection sequence");
+        assert_eq!(
+            sequence.kind,
+            EventCollectionKind::Sequence(EventSequenceOrder::ManualThenChronological)
+        );
+        assert_eq!(sequence.members.len(), source.items.len());
+        assert!(
+            pack.ordered_collection_events(&sequence.id)
+                .is_some_and(|events| events.len() == source.items.len())
         );
     }
 

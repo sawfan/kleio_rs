@@ -1,0 +1,272 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kleio local authoring explorer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f3ec;
+        --panel: #fffaf2;
+        --panel-muted: #f0e6d8;
+        --text: #241d17;
+        --muted: #6d5d4f;
+        --border: #d8c7b4;
+        --accent: #7b4f24;
+        --accent-text: #ffffff;
+        --code-bg: #1f1a16;
+        --code-text: #f5eadc;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #161311;
+          --panel: #211b17;
+          --panel-muted: #2b241f;
+          --text: #f8eee2;
+          --muted: #c1aa93;
+          --border: #4a3a30;
+          --accent: #d19a5c;
+          --accent-text: #1d140d;
+          --code-bg: #120f0d;
+          --code-text: #f8eee2;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      header,
+      main {
+        width: min(1120px, calc(100% - 2rem));
+        margin: 0 auto;
+      }
+
+      header {
+        padding: 2rem 0 1rem;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+      }
+
+      .lede {
+        max-width: 72ch;
+        color: var(--muted);
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+        gap: 1rem;
+        align-items: start;
+        padding-bottom: 2rem;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+        background: var(--panel);
+        padding: 1rem;
+      }
+
+      .controls {
+        position: sticky;
+        top: 1rem;
+      }
+
+      .status {
+        color: var(--muted);
+        margin: 0.5rem 0 1rem;
+      }
+
+      .path-list {
+        display: grid;
+        gap: 0.5rem;
+        margin: 0.75rem 0;
+      }
+
+      button {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        background: var(--panel-muted);
+        color: var(--text);
+        cursor: pointer;
+        font: inherit;
+        padding: 0.5rem 0.65rem;
+        text-align: left;
+      }
+
+      button:hover,
+      button:focus-visible {
+        border-color: var(--accent);
+        outline: none;
+      }
+
+      button[aria-pressed="true"] {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-text);
+      }
+
+      label {
+        display: grid;
+        gap: 0.35rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-top: 1rem;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+        padding: 0.5rem 0.65rem;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+      }
+
+      .metric {
+        background: var(--panel-muted);
+        border-radius: 0.65rem;
+        padding: 0.75rem;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 1.5rem;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .record-list {
+        display: grid;
+        gap: 0.5rem;
+        margin: 1rem 0;
+      }
+
+      .record-card,
+      .detail-section {
+        border: 1px solid var(--border);
+        border-radius: 0.65rem;
+        background: var(--panel);
+        padding: 0.75rem;
+      }
+
+      .record-card h3,
+      .detail-section h3 {
+        margin: 0 0 0.35rem;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-top: 0.5rem;
+      }
+
+      .pill {
+        border-radius: 999px;
+        background: var(--panel-muted);
+        color: var(--muted);
+        font-size: 0.8rem;
+        padding: 0.15rem 0.5rem;
+      }
+
+      pre {
+        max-height: 34rem;
+        overflow: auto;
+        border-radius: 0.65rem;
+        background: var(--code-bg);
+        color: var(--code-text);
+        padding: 1rem;
+        tab-size: 2;
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .empty {
+        border: 1px dashed var(--border);
+        border-radius: 0.65rem;
+        color: var(--muted);
+        padding: 1rem;
+      }
+
+      @media (max-width: 760px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .controls {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Kleio local authoring explorer</h1>
+      <p class="lede">
+        This Trunk example compiles fictional local Kleio Markdown/TOML data from
+        <code>data/</code>, then fetches the generated JSON so you can inspect the
+        authoring model before integrating it into a downstream application.
+      </p>
+    </header>
+
+    <main class="shell">
+      <aside class="panel controls" aria-label="Explorer controls">
+        <h2>Compiled outputs</h2>
+        <div id="status" class="status">Loading generated JSON…</div>
+        <div id="dataset-buttons" class="path-list"></div>
+        <label>
+          Filter records
+          <input id="filter" type="search" placeholder="person, event, source, title…" />
+        </label>
+        <p class="meta">
+          Edit files under <code>data/worlds/default</code>; Trunk rebuilds these
+          JSON outputs before serving the example.
+        </p>
+      </aside>
+
+      <section class="panel" aria-live="polite">
+        <div id="summary"></div>
+        <div id="records"></div>
+        <div id="details"></div>
+      </section>
+    </main>
+
+    <link data-trunk rel="copy-dir" href="data/worlds/default/build" />
+    <link data-trunk rel="rust" />
+  </body>
+</html>

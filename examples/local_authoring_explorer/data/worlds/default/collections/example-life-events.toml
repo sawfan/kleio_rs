@@ -1,0 +1,24 @@
+schema_version = 1
+id = "collection:example-life-events"
+kind = "event-collection"
+title = "Example life events"
+collection_kind = "sequence"
+order = "manual-then-chronological"
+
+[[members]]
+event = "event:birth-alex-example"
+label = "Birth"
+role = "start"
+ordinal = 1
+
+[[members]]
+event = "event:alex-example-residence"
+label = "Residence"
+role = "life-event"
+ordinal = 2
+
+[[members]]
+event = "event:birth-morgan-example"
+label = "Related birth"
+role = "context"
+ordinal = 3

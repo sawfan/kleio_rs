@@ -107,6 +107,13 @@ fn ecs_from_local_data_bundle(bundle: &LocalDataBundle) -> LocalEcsBundle {
         .filter(|record| is_entity_record(record) || is_event_record(record))
         .map(ecs_entity_from_markdown_record)
         .collect::<Vec<_>>();
+    for record in bundle
+        .markdown_records
+        .iter()
+        .filter(|record| is_event_record(record))
+    {
+        entities.extend(inline_assertion_entities(record));
+    }
 
     entities.sort_by(|left, right| left.id.cmp(&right.id));
 
@@ -256,8 +263,7 @@ fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEnti
             "Assertion".to_string(),
             serde_json::json!({
                 "assertion_kind": record.kind,
-                "subject": record.attributes.get("subject"),
-                "predicate": record.attributes.get("predicate"),
+                "target": record.attributes.get("target"),
                 "value": record.attributes.get("value"),
                 "confidence": record.attributes.get("confidence"),
                 "sources": record
@@ -308,16 +314,83 @@ fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEnti
     }
 
     if let Some(assertions) = record.attributes.get("assertions") {
-        components.insert(
-            "SourceLinks".to_string(),
-            serde_json::json!({ "assertions": assertions }),
-        );
+        let external_assertions = external_assertion_ids(assertions);
+        if !external_assertions.is_empty() {
+            components.insert(
+                "SourceLinks".to_string(),
+                serde_json::json!({ "assertions": external_assertions }),
+            );
+        }
     }
 
     LocalEcsEntity {
         id: record.id.clone(),
         components,
     }
+}
+
+fn inline_assertion_entities(record: &LocalMarkdownRecord) -> Vec<LocalEcsEntity> {
+    record
+        .attributes
+        .get("assertions")
+        .and_then(serde_json::Value::as_array)
+        .map(|assertions| {
+            assertions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, assertion)| inline_assertion_entity(record, index, assertion))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn inline_assertion_entity(
+    record: &LocalMarkdownRecord,
+    index: usize,
+    assertion: &serde_json::Value,
+) -> Option<LocalEcsEntity> {
+    let assertion = assertion.as_object()?;
+    let target = assertion.get("target")?.as_str()?;
+    let target = if target.starts_with('#') {
+        format!("{}{}", record.id, target)
+    } else {
+        target.to_string()
+    };
+    let id = format!("{}#assertion:{}", record.id, index + 1);
+    let mut components = BTreeMap::new();
+    components.insert(
+        "Assertion".to_string(),
+        serde_json::json!({
+            "assertion_kind": assertion
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("event-support"),
+            "target": target,
+            "value": assertion.get("value"),
+            "confidence": assertion.get("confidence"),
+            "sources": assertion
+                .get("sources")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+            "note": assertion.get("note"),
+            "inline_in": record.id,
+        }),
+    );
+
+    Some(LocalEcsEntity { id, components })
+}
+
+fn external_assertion_ids(assertions: &serde_json::Value) -> Vec<String> {
+    assertions
+        .as_array()
+        .map(|assertions| {
+            assertions
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn is_entity_record(record: &LocalMarkdownRecord) -> bool {
@@ -375,11 +448,6 @@ mod tests {
             ecs.entities
                 .iter()
                 .any(|entity| entity.id == "person:example-person")
-        );
-        assert!(
-            ecs.entities
-                .iter()
-                .any(|entity| entity.id == "assertion:birth-example-person")
         );
         assert!(
             ecs.entities

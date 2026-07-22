@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    Attribute, DateValue, Event, EventId, EventKind, Name, Person, PersonId, Provenance,
-    RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
+    Attribute, DateValue, EventId, GenealogyEvent, GenealogyEventKind, Name, Person, PersonId,
+    Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
 };
 
 use super::{LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, LocalTomlDocument};
@@ -98,8 +98,20 @@ pub(super) fn tree_from_local_data_bundle_with_view(
             numeric_attribute(record.attributes.get("x")).unwrap_or((index as f32) * 180.0),
             numeric_attribute(record.attributes.get("y")).unwrap_or(0.0),
         );
-        add_person_life_event(&mut tree, person_id, record, "birth_date", EventKind::Birth);
-        add_person_life_event(&mut tree, person_id, record, "death_date", EventKind::Death);
+        add_person_life_event(
+            &mut tree,
+            person_id,
+            record,
+            "birth_date",
+            GenealogyEventKind::Birth,
+        );
+        add_person_life_event(
+            &mut tree,
+            person_id,
+            record,
+            "death_date",
+            GenealogyEventKind::Death,
+        );
     }
 
     for record in bundle
@@ -119,7 +131,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         for source_id in string_array_attribute(record.attributes.get("sources")) {
             provenance.sources.push(SourceRef(source_id));
         }
-        let event = Event {
+        let event = GenealogyEvent {
             id: event_id,
             kind: event_kind_from_local_kind(&record.kind),
             date: record
@@ -481,16 +493,16 @@ fn is_timeline_event_record(record: &LocalMarkdownRecord) -> bool {
     record.path.starts_with("events/") || record.attributes.contains_key("participants")
 }
 
-fn event_kind_from_local_kind(kind: &str) -> EventKind {
+fn event_kind_from_local_kind(kind: &str) -> GenealogyEventKind {
     match kind {
-        "birth" => EventKind::Birth,
-        "death" => EventKind::Death,
-        "marriage" => EventKind::Marriage,
-        "baptism" => EventKind::Baptism,
-        "burial" => EventKind::Burial,
-        "residence" => EventKind::Residence,
-        "occupation" => EventKind::Occupation,
-        other => EventKind::Other(other.to_string()),
+        "birth" => GenealogyEventKind::Birth,
+        "death" => GenealogyEventKind::Death,
+        "marriage" => GenealogyEventKind::Marriage,
+        "baptism" => GenealogyEventKind::Baptism,
+        "burial" => GenealogyEventKind::Burial,
+        "residence" => GenealogyEventKind::Residence,
+        "occupation" => GenealogyEventKind::Occupation,
+        other => GenealogyEventKind::Other(other.to_string()),
     }
 }
 
@@ -565,7 +577,7 @@ fn add_person_life_event(
     person_id: PersonId,
     record: &LocalMarkdownRecord,
     field: &str,
-    kind: EventKind,
+    kind: GenealogyEventKind,
 ) {
     let Some(date) = record
         .attributes
@@ -577,11 +589,11 @@ fn add_person_life_event(
 
     let id = next_event_id(tree);
     let label = match kind {
-        EventKind::Birth => "Birth",
-        EventKind::Death => "Death",
+        GenealogyEventKind::Birth => "Birth",
+        GenealogyEventKind::Death => "Death",
         _ => "Life event",
     };
-    let event = Event {
+    let event = GenealogyEvent {
         id,
         kind,
         date: Some(DateValue::from_original(

@@ -5,6 +5,8 @@
 //! code depend directly on localStorage, OPFS, or filesystem details.
 
 use crate::pack::TimelineDocument;
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::timeline_document_io::{
     timeline_document_from_json, timeline_document_from_toml, timeline_document_to_json_pretty,
     timeline_document_to_toml_pretty,

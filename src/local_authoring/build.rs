@@ -15,6 +15,7 @@ pub struct LocalWorldBuildOutput {
     pub toml_documents: usize,
     pub ecs_entities: usize,
     pub timeline_events: Option<usize>,
+    pub timeline_collections: Option<usize>,
     pub tree_people: Option<usize>,
     pub tree_events: Option<usize>,
     pub tree_relationships: Option<usize>,
@@ -44,13 +45,18 @@ pub fn build_local_world_with_options(
     let ecs = write_local_ecs_json(world_root, &ecs_json_path)?;
 
     let build_dir = semantic_json_path.parent().unwrap_or(world_root);
-    let (timeline_json_path, timeline_events) = if let Some(view) = options.timeline_view {
-        let path = build_dir.join(format!("{view}.timeline.json"));
-        let timeline = write_local_timeline_json(world_root, Some(view), &path)?;
-        (Some(path), Some(timeline.events.len()))
-    } else {
-        (None, None)
-    };
+    let (timeline_json_path, timeline_events, timeline_collections) =
+        if let Some(view) = options.timeline_view {
+            let path = build_dir.join(format!("{view}.timeline.json"));
+            let timeline = write_local_timeline_json(world_root, Some(view), &path)?;
+            (
+                Some(path),
+                Some(timeline.events.len()),
+                Some(timeline.collections.len()),
+            )
+        } else {
+            (None, None, None)
+        };
 
     let (tree_json_path, tree_people, tree_events, tree_relationships) =
         if let Some(view) = options.tree_view {
@@ -75,6 +81,7 @@ pub fn build_local_world_with_options(
         toml_documents: semantic.toml_documents.len(),
         ecs_entities: ecs.entities.len(),
         timeline_events,
+        timeline_collections,
         tree_people,
         tree_events,
         tree_relationships,
@@ -107,6 +114,7 @@ mod tests {
         assert!(output.markdown_records > 0);
         assert!(output.ecs_entities > 0);
         assert!(output.timeline_json_path.is_none());
+        assert_eq!(output.timeline_collections, None);
         assert!(output.tree_json_path.is_none());
         assert!(output.semantic_json_path.exists());
         assert!(output.ecs_json_path.exists());
@@ -145,6 +153,7 @@ mod tests {
             Some(world_root.join("build/main-family-tree.tree.json"))
         );
         assert_eq!(output.timeline_events, Some(1));
+        assert_eq!(output.timeline_collections, Some(1));
         assert_eq!(output.tree_people, Some(1));
         assert_eq!(output.tree_events, Some(1));
         assert_eq!(output.tree_relationships, Some(0));

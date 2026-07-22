@@ -87,9 +87,8 @@ impl LocalSourceOptions {
 pub struct LocalAssertionOptions {
     pub assertion_slug: String,
     pub assertion_kind: String,
-    pub subject: String,
-    pub predicate: String,
-    pub value: String,
+    pub target: String,
+    pub value: Option<String>,
     pub force: bool,
 }
 
@@ -183,11 +182,7 @@ pub fn create_local_assertion(
 ) -> Result<PathBuf, LocalAuthoringError> {
     validate_slug(&options.assertion_slug, "assertion slug")?;
     validate_slug(&options.assertion_kind, "assertion kind")?;
-    if options.subject.trim().is_empty() || options.predicate.trim().is_empty() {
-        return Err(LocalAuthoringError::Validation {
-            message: "assertion subject and predicate cannot be empty".to_string(),
-        });
-    }
+    validate_record_id(target_base_id(&options.target), "assertion target")?;
 
     let world_root = world_root.as_ref();
     let paths = WorldPaths::new(world_root);
@@ -292,10 +287,8 @@ fn assertion_markdown(options: &LocalAssertionOptions) -> String {
 schema_version = 1
 id = "{}"
 kind = "{}"
-subject = "{}"
-predicate = "{}"
-value = "{}"
-sources = []
+target = "{}"
+{}sources = []
 confidence = "medium"
 +++
 
@@ -303,10 +296,20 @@ Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
 "#,
         escape_toml_basic(&options.id()),
         escape_toml_basic(&options.assertion_kind),
-        escape_toml_basic(&options.subject),
-        escape_toml_basic(&options.predicate),
-        escape_toml_basic(&options.value)
+        escape_toml_basic(&options.target),
+        options
+            .value
+            .as_deref()
+            .map(|value| format!("value = \"{}\"\n", escape_toml_basic(value)))
+            .unwrap_or_default()
     )
+}
+
+fn target_base_id(target: &str) -> &str {
+    target
+        .split_once('#')
+        .map(|(base, _)| base)
+        .unwrap_or(target)
 }
 
 fn event_kind_dir_name(event_kind: &str) -> &str {
@@ -465,13 +468,26 @@ mod tests {
             &LocalAssertionOptions {
                 assertion_slug: "example-claim".to_string(),
                 assertion_kind: "identity".to_string(),
-                subject: "person:example-person".to_string(),
-                predicate: "has_name".to_string(),
-                value: "Example Person".to_string(),
+                target: "person:example-person#name".to_string(),
+                value: Some("Example Person".to_string()),
                 force: false,
             },
         )
         .expect("assertion");
+
+        let support_assertion = create_local_assertion(
+            &world_root,
+            &LocalAssertionOptions {
+                assertion_slug: "example-event-support".to_string(),
+                assertion_kind: "event-support".to_string(),
+                target: "event:example-observation#date".to_string(),
+                value: None,
+                force: false,
+            },
+        )
+        .expect("support assertion");
+        let support_text = fs::read_to_string(&support_assertion).expect("support assertion text");
+        assert!(!support_text.contains("value ="));
 
         assert_eq!(
             relationship.strip_prefix(&world_root).unwrap(),

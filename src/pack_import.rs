@@ -71,6 +71,16 @@ pub fn append_event_pack_candidates(batch: &mut ImportBatch, pack: &EventPack) {
         );
     }
 
+    for (idx, collection) in pack.event_collections.iter().cloned().enumerate() {
+        batch.candidates.push(
+            ImportCandidate::add(
+                ImportCandidateId::new(format!("candidate:event-collection:{idx}")),
+                ImportCandidateItem::EventCollection(collection),
+            )
+            .accepted(),
+        );
+    }
+
     for (idx, relation) in pack.event_relations.iter().cloned().enumerate() {
         batch.candidates.push(
             ImportCandidate::add(
@@ -138,7 +148,10 @@ fn source_kind_key(source_kind: &ImportSourceKind) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventId, EventTypeId, PackId, PackKind, PackMetadata, TimelineEvent};
+    use crate::{
+        EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember, EventId,
+        EventTypeId, PackId, PackKind, PackMetadata, TimelineEvent,
+    };
 
     #[test]
     fn import_batch_from_pack_extracts_all_candidate_kinds() {
@@ -151,6 +164,17 @@ mod tests {
             EventTypeId::new("history.event"),
             "Event",
         ));
+        pack.event_collections.push(
+            EventCollection::new(
+                EventCollectionId::new("collection:test"),
+                "Test Collection",
+                EventCollectionKind::Set,
+            )
+            .with_member(EventCollectionMember::new(EventId(1))),
+        );
+        let collection_refs = pack.event_collections_for_event(EventId(1));
+        assert_eq!(collection_refs.len(), 1);
+        assert_eq!(collection_refs[0].id.as_str(), "collection:test");
 
         let batch = import_batch_from_event_pack(
             "test pack.json",
@@ -162,7 +186,7 @@ mod tests {
 
         assert_eq!(batch.id.as_str(), "import:json:test-pack-json");
         assert_eq!(batch.records.len(), 1);
-        assert_eq!(batch.accepted_count(), 1);
+        assert_eq!(batch.accepted_count(), 2);
     }
 
     #[test]

@@ -74,7 +74,7 @@ fn default_output_path(source_root: &std::path::Path, output_kind: OutputKind) -
     match output_kind {
         OutputKind::Bundle => source_root.join("build/kleio.compiled.json"),
         OutputKind::Tree => source_root.join("build/kleio-tree.json"),
-        OutputKind::TreesDocument => source_root.join("build/ourania-trees-document.json"),
+        OutputKind::TreesDocument => source_root.join("build/kleio-trees-document.json"),
     }
 }
 
@@ -174,7 +174,7 @@ fn write_local_trees_document_json(source_root: PathBuf, output_path: PathBuf) -
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("failed to compile local Ourania trees document: {err}");
+            eprintln!("failed to compile local Kleio trees document: {err}");
             ExitCode::FAILURE
         }
     }
@@ -224,7 +224,7 @@ fn check_local_trees_document_json(source_root: PathBuf, output_path: PathBuf) -
     let document = match kleio::compile_local_trees_document(&source_root) {
         Ok(document) => document,
         Err(err) => {
-            eprintln!("failed to compile local Ourania trees document: {err}");
+            eprintln!("failed to compile local Kleio trees document: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -232,7 +232,7 @@ fn check_local_trees_document_json(source_root: PathBuf, output_path: PathBuf) -
     let expected = match serde_json::to_string_pretty(&document) {
         Ok(json) => format!("{json}\n"),
         Err(err) => {
-            eprintln!("failed to serialize local Ourania trees document: {err}");
+            eprintln!("failed to serialize local Kleio trees document: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -274,6 +274,6 @@ fn check_expected_json(
 fn print_usage() {
     eprintln!(
         "Usage: cargo run -p kleio --example compile_local_data -- [--tree|--trees-document|--bundle] [--check] [--init-example] [workspace-root] [output-json]\n\n\
-  workspace-root: $KLEIO_DATA_DIR, $XDG_DATA_HOME/kleio, or ~/.local/share/kleio\n  compiles the default world at <workspace-root>/worlds/default\n  tree output: <world-root>/build/kleio-tree.json\n  trees document output: <world-root>/build/ourania-trees-document.json\n  bundle output: <world-root>/build/kleio.compiled.json"
+  workspace-root: $KLEIO_DATA_DIR, $XDG_DATA_HOME/kleio, or ~/.local/share/kleio\n  compiles the default world at <workspace-root>/worlds/default\n  tree output: <world-root>/build/kleio-tree.json\n  trees document output: <world-root>/build/kleio-trees-document.json\n  bundle output: <world-root>/build/kleio.compiled.json"
     );
 }

@@ -13,6 +13,9 @@ use rkyv::{Archive, Deserialize, Serialize};
 use crate::attribution::{Provenance, SourceRef, Tag};
 use crate::entity::{Entity, EntityRef};
 use crate::event::{EventRelation, TimelineEvent};
+use crate::event_collection::{
+    EventCollection, EventCollectionId, collection_missing_event_ids, ordered_collection_events,
+};
 use crate::event_query::{TimelineEventFilter, YearSpan, filter_timeline_events};
 use crate::event_type::{DomainProfile, EventTypeId};
 
@@ -141,6 +144,12 @@ pub struct EventPack {
     pub domain_profiles: Vec<DomainProfile>,
     pub entities: Vec<Entity>,
     pub events: Vec<TimelineEvent>,
+    /// Curated sets or sequences of events. These are distinct from
+    /// `event_relations`: relations describe event-to-event composition or
+    /// context, while collections describe reusable research, comparison, or
+    /// presentation groupings.
+    #[serde(default)]
+    pub event_collections: Vec<EventCollection>,
     pub event_relations: Vec<EventRelation>,
     pub sources: Vec<SourceRecord>,
     pub tags: Vec<Tag>,
@@ -155,6 +164,7 @@ impl EventPack {
             domain_profiles: Vec::new(),
             entities: Vec::new(),
             events: Vec::new(),
+            event_collections: Vec::new(),
             event_relations: Vec::new(),
             sources: Vec::new(),
             tags: Vec::new(),
@@ -185,6 +195,35 @@ impl EventPack {
         self.event_relations
             .iter()
             .filter(|relation| relation.parent_event_id == parent_event_id)
+            .collect()
+    }
+
+    pub fn event_collection(&self, collection_id: &EventCollectionId) -> Option<&EventCollection> {
+        self.event_collections
+            .iter()
+            .find(|collection| &collection.id == collection_id)
+    }
+
+    pub fn ordered_collection_events(
+        &self,
+        collection_id: &EventCollectionId,
+    ) -> Option<Vec<&TimelineEvent>> {
+        self.event_collection(collection_id)
+            .map(|collection| ordered_collection_events(collection, &self.events))
+    }
+
+    pub fn collection_missing_event_ids(
+        &self,
+        collection_id: &EventCollectionId,
+    ) -> Option<Vec<crate::EventId>> {
+        self.event_collection(collection_id)
+            .map(|collection| collection_missing_event_ids(collection, &self.events))
+    }
+
+    pub fn event_collections_for_event(&self, event_id: crate::EventId) -> Vec<&EventCollection> {
+        self.event_collections
+            .iter()
+            .filter(|collection| collection.contains_event(event_id))
             .collect()
     }
 
@@ -274,6 +313,40 @@ impl TimelineDocument {
     pub fn active_event_relations(&self) -> Vec<&EventRelation> {
         self.active_packs()
             .flat_map(|pack| pack.event_relations.iter())
+            .collect()
+    }
+
+    pub fn active_event_collections(&self) -> Vec<&EventCollection> {
+        self.active_packs()
+            .flat_map(|pack| pack.event_collections.iter())
+            .collect()
+    }
+
+    pub fn active_event_collection(
+        &self,
+        collection_id: &EventCollectionId,
+    ) -> Option<&EventCollection> {
+        self.active_packs()
+            .flat_map(|pack| pack.event_collections.iter())
+            .find(|collection| &collection.id == collection_id)
+    }
+
+    pub fn ordered_active_collection_events(
+        &self,
+        collection_id: &EventCollectionId,
+    ) -> Option<Vec<&TimelineEvent>> {
+        self.active_packs().find_map(|pack| {
+            pack.event_collection(collection_id)
+                .map(|collection| ordered_collection_events(collection, &pack.events))
+        })
+    }
+
+    pub fn active_event_collections_for_event(
+        &self,
+        event_id: crate::EventId,
+    ) -> Vec<&EventCollection> {
+        self.active_packs()
+            .flat_map(|pack| pack.event_collections_for_event(event_id))
             .collect()
     }
 

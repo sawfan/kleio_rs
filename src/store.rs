@@ -165,7 +165,7 @@ impl GenealogyStore {
     pub fn event(
         &self,
         id: EventId,
-    ) -> Result<Option<&rkyv::Archived<crate::model::Event>>, GenealogyStoreError> {
+    ) -> Result<Option<&rkyv::Archived<crate::GenealogyEvent>>, GenealogyStoreError> {
         let Some(&idx) = self.event_by_id.get(&id.0) else {
             return Ok(None);
         };
@@ -313,7 +313,7 @@ impl GenealogyStore {
         &self,
         year: i32,
         limit: usize,
-    ) -> Result<Vec<&rkyv::Archived<crate::model::Event>>, GenealogyStoreError> {
+    ) -> Result<Vec<&rkyv::Archived<crate::GenealogyEvent>>, GenealogyStoreError> {
         let Some(postings) = self.events_by_year.get(&year) else {
             return Ok(Vec::new());
         };

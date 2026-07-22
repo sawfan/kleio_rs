@@ -61,6 +61,13 @@ mod tests {
         assert_eq!(parsed.version, TimelineDocument::CURRENT_VERSION);
         assert_eq!(parsed.packs.len(), 4);
         assert_eq!(parsed.active_pack_ids.len(), 4);
+        assert!(
+            parsed
+                .active_event_collection(&crate::EventCollectionId::new(
+                    "collection:sample-biography-sequence"
+                ))
+                .is_some()
+        );
     }
 
     #[test]
@@ -73,5 +80,12 @@ mod tests {
         assert_eq!(parsed.version, TimelineDocument::CURRENT_VERSION);
         assert_eq!(parsed.packs.len(), 4);
         assert_eq!(parsed.active_pack_ids.len(), 4);
+        assert!(
+            parsed
+                .active_event_collection(&crate::EventCollectionId::new(
+                    "collection:sample-biography-sequence"
+                ))
+                .is_some()
+        );
     }
 }

@@ -135,7 +135,6 @@ pub fn create_local_birth_event(
     create_dir(world_root, world_root)?;
     create_dir(world_root, &paths.births_dir())?;
     create_dir(world_root, &paths.places_dir())?;
-    create_dir(world_root, &paths.assertions_dir())?;
     create_dir(world_root, &paths.sources_dir())?;
 
     write_new_file(
@@ -150,19 +149,12 @@ pub fn create_local_birth_event(
         &personal_knowledge_source_markdown(),
         false,
     )?;
-    write_new_file(
-        world_root,
-        &paths
-            .assertions_dir()
-            .join(format!("birth-{}.md", options.person_slug)),
-        &birth_assertion_markdown(&BirthEventTemplate {
-            event_id: options.birth_event_id(),
-            person_id: options.person_id(),
-            person_name: options.person_name.clone(),
-            birth_date: options.birth_date.clone(),
-        }),
-        options.force,
-    )?;
+    let birth_template = BirthEventTemplate {
+        event_id: options.birth_event_id(),
+        person_id: options.person_id(),
+        person_name: options.person_name.clone(),
+        birth_date: options.birth_date.clone(),
+    };
     write_new_file(
         world_root,
         &paths.births_dir().join(format!(
@@ -170,12 +162,7 @@ pub fn create_local_birth_event(
             options.birth_date.as_deref().unwrap_or("unknown-date"),
             options.person_slug
         )),
-        &birth_event_markdown(&BirthEventTemplate {
-            event_id: options.birth_event_id(),
-            person_id: options.person_id(),
-            person_name: options.person_name.clone(),
-            birth_date: options.birth_date.clone(),
-        }),
+        &birth_event_markdown(&birth_template),
         options.force,
     )?;
 
@@ -222,6 +209,7 @@ pub fn create_world_layout(
         paths.marriages_dir(),
         paths.migrations_dir(),
         paths.observations_dir(),
+        paths.collections_dir(),
         paths.moments_dir(),
         paths.other_events_dir(),
         paths.assertions_dir(),
@@ -310,6 +298,12 @@ pub fn create_world_skeleton(
             birth_date: options.birth_date.clone(),
             force: options.force,
         },
+    )?;
+    write_new_file(
+        world_root,
+        &paths.collections_dir().join("example-life.toml"),
+        &life_collection_toml(options),
+        options.force,
     )?;
     write_new_file(
         world_root,
@@ -526,17 +520,56 @@ Add biographical notes here. Keep concrete life facts in `events/` so timeline a
     )
 }
 
+enum BirthSupportKind {
+    Date,
+    Time,
+}
+
+impl BirthSupportKind {
+    fn target_fragment(&self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::Time => "time",
+        }
+    }
+
+    fn confidence(&self) -> &'static str {
+        match self {
+            Self::Date => "high",
+            Self::Time => "low",
+        }
+    }
+
+    fn note(&self) -> &'static str {
+        match self {
+            Self::Date => {
+                "Optional reasoning, transcription notes, uncertainty notes, or conflict notes about the birth date. Keep the date value on the linked event so it has one editable source of truth."
+            }
+            Self::Time => {
+                "Optional reasoning, transcription notes, uncertainty notes, or conflict notes about the birth time. Keep the time value on the linked event so it has one editable source of truth."
+            }
+        }
+    }
+}
+
 fn birth_event_markdown(options: &BirthEventTemplate) -> String {
     let date_line = options
         .birth_date
         .as_ref()
         .map(|date| {
+            let precision = if birth_input_has_time(date) {
+                "minute"
+            } else {
+                "day"
+            };
             format!(
-                "time = \"{}\"\ndate_precision = \"day\"\n",
-                escape_toml_basic(date)
+                "time = \"{}\"\ndate_precision = \"{}\"\n",
+                escape_toml_basic(date),
+                precision,
             )
         })
         .unwrap_or_else(|| "date_precision = \"unknown\"\n".to_string());
+    let assertions = birth_assertions_toml(options);
 
     format!(
         r#"+++
@@ -550,7 +583,7 @@ title = "{}"
 places = [
   {{ entity = "{}", role = "birthplace" }},
 ]
-assertions = ["assertion:birth-{}"]
+{}
 +++
 
 # Birth of {}
@@ -562,37 +595,47 @@ Replace the placeholder place/source with the best available evidence when you h
         date_line,
         escape_toml_basic(&options.person_id),
         DEFAULT_PLACE_ID,
-        options
-            .person_id
-            .strip_prefix("person:")
-            .unwrap_or(&options.person_id),
+        assertions,
         options.person_name
     )
 }
 
-fn birth_assertion_markdown(options: &BirthEventTemplate) -> String {
-    format!(
-        r#"+++
-schema_version = 1
-id = "assertion:birth-{}"
-kind = "birth-date"
-subject = "{}"
-predicate = "born_on"
-value = "{}"
+fn birth_assertions_toml(options: &BirthEventTemplate) -> String {
+    birth_support_kinds(options)
+        .into_iter()
+        .map(|support_kind| {
+            format!(
+                r##"
+[[assertions]]
+target = "#{}"
 sources = ["{}"]
-confidence = "medium"
-+++
+confidence = "{}"
+note = "{}"
+"##,
+                support_kind.target_fragment(),
+                DEFAULT_SOURCE_ID,
+                support_kind.confidence(),
+                escape_toml_basic(support_kind.note()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
 
-Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
-"#,
-        options
-            .person_id
-            .strip_prefix("person:")
-            .unwrap_or(&options.person_id),
-        escape_toml_basic(&options.person_id),
-        escape_toml_basic(options.birth_date.as_deref().unwrap_or("unknown")),
-        DEFAULT_SOURCE_ID
-    )
+fn birth_support_kinds(options: &BirthEventTemplate) -> Vec<BirthSupportKind> {
+    let Some(birth_date) = options.birth_date.as_deref() else {
+        return Vec::new();
+    };
+
+    let mut kinds = vec![BirthSupportKind::Date];
+    if birth_input_has_time(birth_date) {
+        kinds.push(BirthSupportKind::Time);
+    }
+    kinds
+}
+
+fn birth_input_has_time(value: &str) -> bool {
+    value.trim().contains(':')
 }
 
 fn unknown_place_toml() -> String {
@@ -684,6 +727,27 @@ strategy = "link"
 Raw imports are world-owned source artifacts. Generated JSON/SQLite belongs under `build/`.
 "#
     .to_string()
+}
+
+fn life_collection_toml(options: &LocalSkeletonOptions) -> String {
+    format!(
+        r#"schema_version = 1
+id = "collection:{}-life"
+kind = "event-collection"
+title = "{} life events"
+collection_kind = "sequence"
+order = "manual_then_chronological"
+
+[[members]]
+event = "event:birth-{}"
+label = "Birth"
+role = "start"
+ordinal = 10
+"#,
+        escape_toml_basic(&options.person_slug),
+        escape_toml_basic(&options.person_name),
+        escape_toml_basic(&options.person_slug),
+    )
 }
 
 fn timeline_view_toml(options: &LocalSkeletonOptions) -> String {
@@ -781,6 +845,52 @@ mod tests {
     use crate::local_authoring::{compile_local_data, compile_local_tree};
 
     #[test]
+    fn birth_event_with_time_gets_separate_time_support_assertion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-birth-time-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        create_local_birth_event(
+            &temp_dir,
+            &LocalBirthEventOptions {
+                person_slug: "alex-example".to_string(),
+                person_name: "Alex Example".to_string(),
+                birth_date: Some("1900-01-01 07:18".to_string()),
+                force: false,
+            },
+        )
+        .expect("birth event");
+
+        let event_text = fs::read_to_string(
+            temp_dir.join("events/births/1900-01-01 07:18-birth-alex-example.md"),
+        )
+        .expect("event text");
+        assert!(event_text.contains("date_precision = \"minute\""));
+        assert!(event_text.contains("target = \"#date\""));
+        assert!(event_text.contains("target = \"#time\""));
+        assert!(event_text.contains("confidence = \"high\""));
+        assert!(event_text.contains("confidence = \"low\""));
+        assert!(!event_text.contains("predicate ="));
+        assert!(!event_text.contains("value ="));
+        assert!(
+            !temp_dir
+                .join("assertions/birth-date-alex-example.md")
+                .exists()
+        );
+        assert!(
+            !temp_dir
+                .join("assertions/birth-time-alex-example.md")
+                .exists()
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
     fn creates_starter_world_skeleton() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-local-skeleton-{}-{}",
@@ -810,7 +920,6 @@ mod tests {
                 .join("events/births/1900-01-01-birth-alex-example.md")
                 .exists()
         );
-        assert!(world_root.join("assertions/birth-alex-example.md").exists());
         assert!(world_root.join("schemas/components/identity.toml").exists());
         assert!(world_root.join("schemas/bundles/person.toml").exists());
         let bundle = compile_local_data(&world_root).expect("world skeleton compiles");
@@ -825,6 +934,25 @@ mod tests {
                 .markdown_records
                 .iter()
                 .any(|record| record.id == "event:birth-alex-example")
+        );
+
+        let birth_event_text =
+            fs::read_to_string(world_root.join("events/births/1900-01-01-birth-alex-example.md"))
+                .expect("birth event text");
+        assert!(birth_event_text.contains("target = \"#date\""));
+        assert!(!birth_event_text.contains("target = \"#time\""));
+        assert!(birth_event_text.contains("confidence = \"high\""));
+        assert!(!birth_event_text.contains("predicate ="));
+        assert!(!birth_event_text.contains("value ="));
+        assert!(
+            !world_root
+                .join("assertions/birth-date-alex-example.md")
+                .exists()
+        );
+        assert!(
+            !world_root
+                .join("assertions/birth-time-alex-example.md")
+                .exists()
         );
 
         let tree = compile_local_tree(&world_root).expect("skeleton tree compiles");

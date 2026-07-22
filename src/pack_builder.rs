@@ -12,9 +12,11 @@ use crate::event::{
     EventCompositionKind, EventParticipant, EventRelation, EventScaleKind, EventTemporalKind,
     TimeSpec, TimelineEvent,
 };
+use crate::event_collection::EventCollection;
 use crate::event_type::{DomainProfile, EventTypeId};
 use crate::event_validation::{
-    EventValidationIssue, ValidationSeverity, validate_event_relations, validate_timeline_event,
+    EventValidationIssue, ValidationSeverity, validate_event_collections, validate_event_relations,
+    validate_timeline_event,
 };
 use crate::model::{EventId, PlaceId};
 use crate::pack::{EventPack, PackKind, PackMetadata, SourceRecord};
@@ -213,6 +215,11 @@ impl EventPackBuilder {
         self
     }
 
+    pub fn add_event_collection(&mut self, collection: EventCollection) -> &mut Self {
+        self.pack.event_collections.push(collection);
+        self
+    }
+
     pub fn add_event_relation(&mut self, relation: EventRelation) -> &mut Self {
         self.pack.event_relations.push(relation);
         self
@@ -273,6 +280,27 @@ impl EventPackBuilder {
             let event_id = match &issue.kind {
                 crate::EventValidationIssueKind::BoundaryRoleMismatch { event_id, .. }
                 | crate::EventValidationIssueKind::BoundaryRoleInferred { event_id, .. } => {
+                    *event_id
+                }
+                _ => continue,
+            };
+            if let Some(validation) = validations
+                .iter_mut()
+                .find(|validation| validation.event_id == event_id)
+            {
+                validation.issues.push(issue);
+            } else {
+                validations.push(PackEventValidation {
+                    event_id,
+                    issues: vec![issue],
+                });
+            }
+        }
+
+        for issue in validate_event_collections(&self.pack.event_collections, &self.pack.events) {
+            let event_id = match &issue.kind {
+                crate::EventValidationIssueKind::CollectionMissingEvent { event_id, .. }
+                | crate::EventValidationIssueKind::CollectionDuplicateMember { event_id, .. } => {
                     *event_id
                 }
                 _ => continue,

@@ -1,0 +1,7 @@
+schema_version = 1
+id = "tree:main-family-tree"
+kind = "tree-view"
+title = "Main example tree"
+
+[root]
+entity = "person:alex-example"

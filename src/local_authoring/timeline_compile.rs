@@ -11,6 +11,7 @@ pub struct LocalTimelineProjection {
     pub schema_version: u32,
     pub world: String,
     pub view: Option<LocalTimelineViewSummary>,
+    pub collections: Vec<LocalTimelineCollection>,
     pub events: Vec<LocalTimelineEvent>,
 }
 
@@ -26,6 +27,33 @@ pub struct LocalTimelineViewSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalTimelineCollection {
+    pub id: String,
+    pub title: Option<String>,
+    pub kind: String,
+    pub order: Option<String>,
+    pub members: Vec<LocalTimelineCollectionMember>,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalTimelineCollectionMember {
+    pub event: String,
+    pub label: Option<String>,
+    pub role: Option<String>,
+    pub ordinal: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalTimelineInlineAssertion {
+    pub target: String,
+    pub confidence: Option<String>,
+    pub sources: Vec<String>,
+    pub note: Option<String>,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalTimelineEvent {
     pub id: String,
     pub kind: String,
@@ -34,6 +62,7 @@ pub struct LocalTimelineEvent {
     pub participants: Vec<serde_json::Value>,
     pub places: Vec<serde_json::Value>,
     pub assertions: Vec<String>,
+    pub inline_assertions: Vec<LocalTimelineInlineAssertion>,
     pub path: String,
     pub notes_markdown: String,
 }
@@ -103,6 +132,7 @@ fn timeline_from_local_data_bundle(
         .filter(|record| timeline_filter_includes_record(record, &filter))
         .map(timeline_event_from_record)
         .collect::<Vec<_>>();
+    let collections = timeline_collections_from_documents(&bundle.toml_documents, &events);
 
     events.sort_by(|left, right| {
         left.time
@@ -118,8 +148,81 @@ fn timeline_from_local_data_bundle(
             title: view.title.clone(),
             path: view.path.clone(),
         }),
+        collections,
         events,
     }
+}
+
+fn timeline_collections_from_documents(
+    documents: &[LocalTomlDocument],
+    events: &[LocalTimelineEvent],
+) -> Vec<LocalTimelineCollection> {
+    let event_ids = events
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut collections = documents
+        .iter()
+        .filter(|document| document.kind.as_deref() == Some("event-collection"))
+        .filter_map(|document| timeline_collection_from_document(document, &event_ids))
+        .collect::<Vec<_>>();
+    collections.sort_by(|left, right| left.id.cmp(&right.id));
+    collections
+}
+
+fn timeline_collection_from_document(
+    document: &LocalTomlDocument,
+    event_ids: &std::collections::BTreeSet<&str>,
+) -> Option<LocalTimelineCollection> {
+    let members = document
+        .data
+        .get("members")
+        .and_then(serde_json::Value::as_array)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|member| {
+                    let event = member.get("event")?.as_str()?.to_string();
+                    event_ids
+                        .contains(event.as_str())
+                        .then(|| LocalTimelineCollectionMember {
+                            event,
+                            label: member
+                                .get("label")
+                                .and_then(serde_json::Value::as_str)
+                                .map(ToOwned::to_owned),
+                            role: member
+                                .get("role")
+                                .and_then(serde_json::Value::as_str)
+                                .map(ToOwned::to_owned),
+                            ordinal: member.get("ordinal").and_then(serde_json::Value::as_i64),
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if members.is_empty() {
+        return None;
+    }
+
+    Some(LocalTimelineCollection {
+        id: document.id.clone().unwrap_or_else(|| document.path.clone()),
+        title: document.title.clone(),
+        kind: document
+            .data
+            .get("collection_kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("set")
+            .to_string(),
+        order: document
+            .data
+            .get("order")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        members,
+        path: document.path.clone(),
+    })
 }
 
 fn select_timeline_view<'a>(
@@ -255,9 +358,59 @@ fn timeline_event_from_record(record: &LocalMarkdownRecord) -> LocalTimelineEven
         participants: json_array(record.attributes.get("participants")),
         places: json_array(record.attributes.get("places")),
         assertions: string_array(record.attributes.get("assertions")),
+        inline_assertions: inline_assertions(record),
         path: record.path.clone(),
         notes_markdown: record.notes_markdown.clone(),
     }
+}
+
+fn inline_assertions(record: &LocalMarkdownRecord) -> Vec<LocalTimelineInlineAssertion> {
+    record
+        .attributes
+        .get("assertions")
+        .and_then(serde_json::Value::as_array)
+        .map(|assertions| {
+            assertions
+                .iter()
+                .filter_map(|assertion| inline_assertion(record, assertion))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn inline_assertion(
+    record: &LocalMarkdownRecord,
+    assertion: &serde_json::Value,
+) -> Option<LocalTimelineInlineAssertion> {
+    let assertion = assertion.as_object()?;
+    let target = assertion.get("target")?.as_str()?;
+    Some(LocalTimelineInlineAssertion {
+        target: if target.starts_with('#') {
+            format!("{}{}", record.id, target)
+        } else {
+            target.to_string()
+        },
+        confidence: assertion
+            .get("confidence")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        sources: assertion
+            .get("sources")
+            .and_then(serde_json::Value::as_array)
+            .map(|sources| {
+                sources
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        note: assertion
+            .get("note")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        value: assertion.get("value").and_then(json_value_as_string),
+    })
 }
 
 fn is_event_record(record: &LocalMarkdownRecord) -> bool {

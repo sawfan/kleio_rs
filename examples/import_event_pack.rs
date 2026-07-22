@@ -46,6 +46,7 @@ fn print_batch_report(batch: &ImportBatch, validation_count: usize) {
     let mut domain_profiles = 0;
     let mut entities = 0;
     let mut events = 0;
+    let mut event_collections = 0;
     let mut event_relations = 0;
     let mut sources = 0;
     let mut tags = 0;
@@ -55,6 +56,7 @@ fn print_batch_report(batch: &ImportBatch, validation_count: usize) {
             ImportCandidateItem::DomainProfile(_) => domain_profiles += 1,
             ImportCandidateItem::Entity(_) => entities += 1,
             ImportCandidateItem::Event(_) => events += 1,
+            ImportCandidateItem::EventCollection(_) => event_collections += 1,
             ImportCandidateItem::EventRelation(_) => event_relations += 1,
             ImportCandidateItem::Source(_) => sources += 1,
             ImportCandidateItem::TagValue(_) => tags += 1,
@@ -64,6 +66,7 @@ fn print_batch_report(batch: &ImportBatch, validation_count: usize) {
     println!("domain_profiles={domain_profiles}");
     println!("entities={entities}");
     println!("events={events}");
+    println!("event_collections={event_collections}");
     println!("event_relations={event_relations}");
     println!("sources={sources}");
     println!("tags={tags}");

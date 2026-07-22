@@ -57,7 +57,7 @@ pub(super) fn validate_local_data(
         }
 
         if let Some(assertions) = record.attributes.get("assertions") {
-            validate_id_references(record, assertions, &ids, "assertions")?;
+            validate_assertion_items(record, assertions, &ids)?;
         }
 
         if let Some(sources) = record.attributes.get("sources") {
@@ -72,6 +72,7 @@ pub(super) fn validate_local_data(
     for document in toml_documents {
         match document.kind.as_deref() {
             Some("relationship") => validate_relationship_document(document, &ids)?,
+            Some("event-collection") => validate_event_collection_document(document, &ids)?,
             Some("timeline-view") => validate_optional_view_entity_reference(
                 document,
                 &["subject", "entity"],
@@ -151,6 +152,52 @@ fn validate_relationship_document(
     Ok(())
 }
 
+fn validate_event_collection_document(
+    document: &LocalTomlDocument,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let collection_kind = document
+        .data
+        .get("collection_kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("set");
+    if !matches!(collection_kind, "set" | "sequence") {
+        return Err(LocalAuthoringError::Validation {
+            message: format!(
+                "{} event collection has invalid collection_kind `{collection_kind}`",
+                document.path
+            ),
+        });
+    }
+
+    let Some(members) = document.data.get("members") else {
+        return Ok(());
+    };
+    let Some(members) = members.as_array() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} `members` must be an array", document.path),
+        });
+    };
+
+    for member in members {
+        let Some(event_id) = member.get("event").and_then(serde_json::Value::as_str) else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} collection member missing `event`", document.path),
+            });
+        };
+        if !ids.contains(event_id) {
+            return Err(LocalAuthoringError::Validation {
+                message: format!(
+                    "{} references missing collection event `{event_id}`",
+                    document.path
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_optional_view_entity_reference(
     document: &LocalTomlDocument,
     path: &[&str],
@@ -212,6 +259,116 @@ fn validate_entity_reference_items(
     Ok(())
 }
 
+fn validate_assertion_items(
+    record: &LocalMarkdownRecord,
+    values: &serde_json::Value,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(values) = values.as_array() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} `assertions` must be an array", record.path),
+        });
+    };
+
+    for value in values {
+        if let Some(id) = value.as_str() {
+            if !ids.contains(id) {
+                return Err(LocalAuthoringError::Validation {
+                    message: format!("{} references missing assertions id `{id}`", record.path),
+                });
+            }
+            continue;
+        }
+
+        let Some(assertion) = value.as_object() else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!(
+                    "{} `assertions` entries must be assertion ids or inline assertion tables",
+                    record.path
+                ),
+            });
+        };
+        validate_inline_assertion(record, assertion, ids)?;
+    }
+
+    Ok(())
+}
+
+fn validate_inline_assertion(
+    record: &LocalMarkdownRecord,
+    assertion: &serde_json::Map<String, serde_json::Value>,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(target) = assertion.get("target").and_then(serde_json::Value::as_str) else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} inline assertion missing `target`", record.path),
+        });
+    };
+    validate_assertion_target(record, target, ids)?;
+
+    if let Some(sources) = assertion.get("sources") {
+        validate_inline_sources(record, sources, ids)?;
+    }
+
+    Ok(())
+}
+
+fn validate_inline_sources(
+    record: &LocalMarkdownRecord,
+    values: &serde_json::Value,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(values) = values.as_array() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!(
+                "{} inline assertion `sources` must be an array",
+                record.path
+            ),
+        });
+    };
+
+    for value in values {
+        let Some(id) = value.as_str() else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!(
+                    "{} inline assertion `sources` must contain only strings",
+                    record.path
+                ),
+            });
+        };
+        if !ids.contains(id) {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} references missing sources id `{id}`", record.path),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_assertion_target(
+    record: &LocalMarkdownRecord,
+    target: &str,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let target_base = if target.starts_with('#') {
+        record.id.as_str()
+    } else {
+        target_base_id(target)
+    };
+
+    if !ids.contains(target_base) {
+        return Err(LocalAuthoringError::Validation {
+            message: format!(
+                "{} references missing assertion target `{target_base}`",
+                record.path
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 fn validate_id_references(
     record: &LocalMarkdownRecord,
     values: &serde_json::Value,
@@ -244,47 +401,39 @@ fn validate_assertion_record(
     record: &LocalMarkdownRecord,
     ids: &BTreeSet<String>,
 ) -> Result<(), LocalAuthoringError> {
-    let Some(subject) = record
+    let target = record
         .attributes
-        .get("subject")
-        .and_then(serde_json::Value::as_str)
-    else {
+        .get("target")
+        .and_then(serde_json::Value::as_str);
+    let Some(target) = target else {
         return Err(LocalAuthoringError::Validation {
-            message: format!("{} assertion missing `subject`", record.path),
+            message: format!("{} assertion missing `target`", record.path),
         });
     };
-
-    if !ids.contains(subject) {
-        return Err(LocalAuthoringError::Validation {
-            message: format!(
-                "{} references missing assertion subject `{subject}`",
-                record.path
-            ),
-        });
-    }
+    validate_assertion_target(record, target, ids)?;
 
     if let Some(sources) = record.attributes.get("sources") {
         validate_id_references(record, sources, ids, "sources")?;
     }
 
-    if record
-        .attributes
-        .get("predicate")
-        .and_then(serde_json::Value::as_str)
-        .is_none_or(str::is_empty)
-    {
-        return Err(LocalAuthoringError::Validation {
-            message: format!("{} assertion missing `predicate`", record.path),
-        });
-    }
-
-    if !record.attributes.contains_key("value") {
+    if assertion_requires_value(record) && !record.attributes.contains_key("value") {
         return Err(LocalAuthoringError::Validation {
             message: format!("{} assertion missing `value`", record.path),
         });
     }
 
     Ok(())
+}
+
+fn assertion_requires_value(record: &LocalMarkdownRecord) -> bool {
+    !record.attributes.contains_key("target")
+}
+
+fn target_base_id(target: &str) -> &str {
+    target
+        .split_once('#')
+        .map(|(base, _)| base)
+        .unwrap_or(target)
 }
 
 fn validate_id(id: &str, path: &str) -> Result<(), LocalAuthoringError> {

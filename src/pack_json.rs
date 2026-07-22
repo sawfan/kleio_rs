@@ -54,7 +54,10 @@ pub fn import_event_pack_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventId, EventTypeId, PackId, TimeSpec, TimelineEvent};
+    use crate::{
+        EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember, EventId,
+        EventTypeId, PackId, TimeSpec, TimelineEvent,
+    };
 
     #[test]
     fn event_pack_json_round_trips_and_imports_as_candidates() {
@@ -68,18 +71,31 @@ mod tests {
                     original: "2026-07-06".to_string(),
                 }),
         );
+        pack.event_collections.push(
+            EventCollection::new(
+                EventCollectionId::new("collection:journal-sequence"),
+                "Journal sequence",
+                EventCollectionKind::Set,
+            )
+            .with_member(EventCollectionMember::new(EventId(1))),
+        );
 
         let json = event_pack_to_json_pretty(&pack).expect("serialize event pack");
         let imported = import_event_pack_json("journal.json", &json).expect("import event pack");
 
         assert_eq!(imported.metadata.title, "Journal Pack");
         assert_eq!(imported.batch.records.len(), 1);
-        assert_eq!(imported.batch.accepted_count(), 1);
+        assert_eq!(imported.batch.accepted_count(), 2);
 
         let materialized = imported.materialize();
         assert_eq!(materialized.kind, PackKind::UserJournal);
         assert_eq!(materialized.events.len(), 1);
         assert_eq!(materialized.events[0].id, EventId(1));
+        assert_eq!(materialized.event_collections.len(), 1);
+        assert_eq!(
+            materialized.event_collections[0].id.as_str(),
+            "collection:journal-sequence"
+        );
     }
 
     #[test]

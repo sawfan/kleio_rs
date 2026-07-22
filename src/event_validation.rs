@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::event::{EventBoundaryKind, EventRelation, EventRelationKind, TimeSpec, TimelineEvent};
+use crate::event_collection::{EventCollection, EventCollectionId};
 use crate::event_type::{DomainProfile, EventConstraint, EventTypeDef, RoleId};
 
 #[derive(
@@ -67,6 +68,14 @@ pub enum EventValidationIssueKind {
         event_id: crate::EventId,
         relation: EventRelationKind,
         inferred: EventBoundaryKind,
+    },
+    CollectionMissingEvent {
+        collection_id: EventCollectionId,
+        event_id: crate::EventId,
+    },
+    CollectionDuplicateMember {
+        collection_id: EventCollectionId,
+        event_id: crate::EventId,
     },
     PlaceRecommended,
     TimeRecommended,
@@ -207,6 +216,49 @@ pub fn validate_event_relations(
     issues
 }
 
+pub fn validate_event_collections(
+    collections: &[EventCollection],
+    events: &[TimelineEvent],
+) -> Vec<EventValidationIssue> {
+    let known_event_ids: BTreeSet<crate::EventId> = events.iter().map(|event| event.id).collect();
+    let mut issues = Vec::new();
+
+    for collection in collections {
+        let mut seen_member_ids = BTreeSet::new();
+        for member in &collection.members {
+            if !known_event_ids.contains(&member.event_id) {
+                issues.push(EventValidationIssue::error(
+                    EventValidationIssueKind::CollectionMissingEvent {
+                        collection_id: collection.id.clone(),
+                        event_id: member.event_id,
+                    },
+                    format!(
+                        "collection `{}` references missing event #{}",
+                        collection.id.as_str(),
+                        member.event_id.0
+                    ),
+                ));
+            }
+
+            if !seen_member_ids.insert(member.event_id) {
+                issues.push(EventValidationIssue::warning(
+                    EventValidationIssueKind::CollectionDuplicateMember {
+                        collection_id: collection.id.clone(),
+                        event_id: member.event_id,
+                    },
+                    format!(
+                        "collection `{}` includes event #{} more than once",
+                        collection.id.as_str(),
+                        member.event_id.0
+                    ),
+                ));
+            }
+        }
+    }
+
+    issues
+}
+
 pub fn validate_timeline_event(
     event: &TimelineEvent,
     profiles: &[DomainProfile],
@@ -324,7 +376,8 @@ fn find_event_type<'a>(
 mod tests {
     use super::*;
     use crate::{
-        DateValue, EventId, EventParticipant, EventTypeId, PersonId, Provenance, TimeSpec,
+        DateValue, EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember,
+        EventId, EventParticipant, EventTypeId, PersonId, Provenance, TimeSpec,
         genealogy_domain_profile,
     };
 
@@ -378,6 +431,34 @@ mod tests {
         assert!(issues.iter().any(|issue| matches!(
             &issue.kind,
             EventValidationIssueKind::RoleNotAllowed { role } if role.as_str() == "commander"
+        )));
+    }
+
+    #[test]
+    fn collection_validation_reports_missing_and_duplicate_members() {
+        let events = vec![TimelineEvent::new(
+            EventId(1),
+            EventTypeId::new("journal.entry"),
+            "Known",
+        )];
+        let collection = EventCollection::new(
+            EventCollectionId::new("collection:test"),
+            "Test",
+            EventCollectionKind::Set,
+        )
+        .with_member(EventCollectionMember::new(EventId(1)))
+        .with_member(EventCollectionMember::new(EventId(1)))
+        .with_member(EventCollectionMember::new(EventId(99)));
+
+        let issues = validate_event_collections(&[collection], &events);
+
+        assert!(issues.iter().any(|issue| matches!(
+            issue.kind,
+            EventValidationIssueKind::CollectionDuplicateMember { .. }
+        )));
+        assert!(issues.iter().any(|issue| matches!(
+            issue.kind,
+            EventValidationIssueKind::CollectionMissingEvent { .. }
         )));
     }
 

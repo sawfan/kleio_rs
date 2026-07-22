@@ -77,6 +77,10 @@ impl WorldPaths {
         self.root.join("events")
     }
 
+    pub fn collections_dir(&self) -> PathBuf {
+        self.root.join("collections")
+    }
+
     pub fn event_kind_dir(&self, event_kind: &str) -> PathBuf {
         self.events_dir().join(event_kind)
     }

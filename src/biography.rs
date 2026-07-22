@@ -11,9 +11,9 @@ use crate::event_query::{TimelineEventFilter, YearSpan, filter_timeline_events};
 use crate::genealogy_timeline::{
     GENEALOGY_LIFE_TYPE, compose_person_life_from_events, is_life_event,
 };
-use crate::model::{Event, EventId, PersonId};
+use crate::model::{EventId, PersonId};
 use crate::pack::{EventPack, PackId, PackKind, PackMetadata};
-use crate::{timeline_event_from_genealogy_event, timeline_events_for_person};
+use crate::{GenealogyEvent, timeline_event_from_genealogy_event, timeline_events_for_person};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BiographyTimeline {
@@ -64,7 +64,7 @@ impl BiographyTimeline {
 
 pub fn biography_timeline_for_person(
     person_id: PersonId,
-    genealogy_events: &[Event],
+    genealogy_events: &[GenealogyEvent],
     life_event_id: Option<EventId>,
     life_title: impl Into<String>,
 ) -> BiographyTimeline {
@@ -88,7 +88,7 @@ pub fn biography_event_pack_for_person(
     pack_id: PackId,
     pack_title: impl Into<String>,
     person_id: PersonId,
-    genealogy_events: &[Event],
+    genealogy_events: &[GenealogyEvent],
     life_event_id: Option<EventId>,
     life_title: impl Into<String>,
 ) -> EventPack {
@@ -117,7 +117,7 @@ pub fn biography_timeline_from_timeline_events(
 }
 
 pub fn adapt_genealogy_events_for_biography(
-    genealogy_events: &[Event],
+    genealogy_events: &[GenealogyEvent],
     person_id: PersonId,
 ) -> Vec<TimelineEvent> {
     genealogy_events
@@ -130,10 +130,15 @@ pub fn adapt_genealogy_events_for_biography(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DateValue, EventKind, Provenance, TimeSpec};
+    use crate::{DateValue, GenealogyEventKind, Provenance, TimeSpec};
 
-    fn genealogy_event(id: u64, kind: EventKind, year: &str, person_id: PersonId) -> Event {
-        Event {
+    fn genealogy_event(
+        id: u64,
+        kind: GenealogyEventKind,
+        year: &str,
+        person_id: PersonId,
+    ) -> GenealogyEvent {
+        GenealogyEvent {
             id: EventId(id),
             kind,
             date: Some(DateValue::from_original(year, Provenance::default())),
@@ -150,8 +155,8 @@ mod tests {
     fn biography_timeline_composes_life_macro_event() {
         let person_id = PersonId(7);
         let events = vec![
-            genealogy_event(1, EventKind::Birth, "1815", person_id),
-            genealogy_event(2, EventKind::Death, "1852", person_id),
+            genealogy_event(1, GenealogyEventKind::Birth, "1815", person_id),
+            genealogy_event(2, GenealogyEventKind::Death, "1852", person_id),
         ];
 
         let timeline = biography_timeline_for_person(
@@ -171,8 +176,8 @@ mod tests {
     fn collapsed_biography_hides_life_boundary_children() {
         let person_id = PersonId(7);
         let events = vec![
-            genealogy_event(1, EventKind::Birth, "1815", person_id),
-            genealogy_event(2, EventKind::Death, "1852", person_id),
+            genealogy_event(1, GenealogyEventKind::Birth, "1815", person_id),
+            genealogy_event(2, GenealogyEventKind::Death, "1852", person_id),
         ];
         let timeline = biography_timeline_for_person(
             person_id,
@@ -194,8 +199,8 @@ mod tests {
     fn biography_timeline_can_materialize_event_pack() {
         let person_id = PersonId(7);
         let events = vec![
-            genealogy_event(1, EventKind::Birth, "1815", person_id),
-            genealogy_event(2, EventKind::Death, "1852", person_id),
+            genealogy_event(1, GenealogyEventKind::Birth, "1815", person_id),
+            genealogy_event(2, GenealogyEventKind::Death, "1852", person_id),
         ];
 
         let pack = biography_event_pack_for_person(

@@ -9,6 +9,10 @@ use crate::event::{
     EventBoundaryKind, EventCompositionKind, EventParticipant, EventRelationKind,
     EventTemporalKind, TimeSpec,
 };
+use crate::event_collection::{
+    EventCollection, EventCollectionId, EventCollectionKind, EventCollectionMember,
+    EventSequenceOrder,
+};
 use crate::event_composition::boundary_relations_for_composite;
 use crate::event_type::{EventTypeId, genealogy_domain_profile, journal_domain_profile};
 use crate::model::{DateValue, EventId, PersonId};
@@ -87,6 +91,31 @@ pub fn sample_biography_pack() -> EventPack {
     for relation in boundary_relations_for_composite(life_id, Some(birth_id), Some(death_id)) {
         builder.add_event_relation(relation);
     }
+    builder.add_event_collection(
+        EventCollection::new(
+            EventCollectionId::new("collection:sample-biography-sequence"),
+            "Sample biography sequence",
+            EventCollectionKind::Sequence(EventSequenceOrder::Chronological),
+        )
+        .with_description(
+            "A chronological sequence of the sample person's major life boundary events.",
+        )
+        .with_member(
+            EventCollectionMember::new(birth_id)
+                .with_label("Birth")
+                .with_role("boundary:start"),
+        )
+        .with_member(
+            EventCollectionMember::new(life_id)
+                .with_label("Life interval")
+                .with_role("context"),
+        )
+        .with_member(
+            EventCollectionMember::new(death_id)
+                .with_label("Death")
+                .with_role("boundary:end"),
+        ),
+    );
 
     builder.into_pack()
 }
@@ -285,6 +314,7 @@ mod tests {
         assert_eq!(pack.kind, PackKind::Biography);
         assert_eq!(pack.events.len(), 3);
         assert_eq!(pack.event_relations.len(), 2);
+        assert_eq!(pack.event_collections.len(), 1);
         assert!(
             pack.event_relations
                 .iter()
@@ -294,6 +324,12 @@ mod tests {
             pack.event_relations
                 .iter()
                 .any(|relation| relation.kind == EventRelationKind::Ends)
+        );
+        assert!(
+            pack.ordered_collection_events(&EventCollectionId::new(
+                "collection:sample-biography-sequence"
+            ))
+            .is_some_and(|events| events.len() == 3)
         );
     }
 

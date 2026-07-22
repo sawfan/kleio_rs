@@ -7,7 +7,7 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{Event, EventId, Name, Person, PersonId, Provenance, Sex};
+use crate::{EventId, GenealogyEvent, Name, Person, PersonId, Provenance, Sex};
 
 #[derive(
     Debug,
@@ -358,7 +358,7 @@ pub struct TreeDocument {
     pub main_person: Option<PersonId>,
 
     pub people: Vec<Person>,
-    pub events: Vec<Event>,
+    pub events: Vec<GenealogyEvent>,
     pub relationships: Vec<TreeRelationship>,
     pub categories: Vec<TreeCategory>,
     pub attachments: Vec<TreeAttachment>,
