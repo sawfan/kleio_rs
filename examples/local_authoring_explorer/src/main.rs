@@ -135,7 +135,7 @@ mod wasm_app {
     #[derive(Debug, Deserialize)]
     struct TimelineEvent {
         id: String,
-        kind: String,
+        event_type: String,
         title: Option<String>,
         time: Option<String>,
         path: String,
@@ -424,7 +424,7 @@ mod wasm_app {
                     format!(
                         "{} {} {} {}",
                         event.id,
-                        event.kind,
+                        event.event_type,
                         event.title.as_deref().unwrap_or(""),
                         event.notes_markdown
                     ),
@@ -473,7 +473,7 @@ mod wasm_app {
                 r#"<article class="record-card"><h3>{}</h3><div class="meta"><code>{}</code> · {} · {} · {}</div></article>"#,
                 esc(event.title.as_deref().unwrap_or(&event.id)),
                 esc(&event.id),
-                esc(&event.kind),
+                esc(&event.event_type),
                 esc(event.time.as_deref().unwrap_or("unspecified time")),
                 esc(&event.path)
             ));

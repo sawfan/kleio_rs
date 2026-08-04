@@ -81,40 +81,40 @@ impl WorldPaths {
         self.root.join("collections")
     }
 
-    pub fn event_kind_dir(&self, event_kind: &str) -> PathBuf {
-        self.events_dir().join(event_kind)
+    pub fn event_type_dir(&self, event_type: &str) -> PathBuf {
+        self.events_dir().join(event_type)
     }
 
     pub fn births_dir(&self) -> PathBuf {
-        self.event_kind_dir("births")
+        self.event_type_dir("births")
     }
 
     pub fn deaths_dir(&self) -> PathBuf {
-        self.event_kind_dir("deaths")
+        self.event_type_dir("deaths")
     }
 
     pub fn residences_dir(&self) -> PathBuf {
-        self.event_kind_dir("residences")
+        self.event_type_dir("residences")
     }
 
     pub fn marriages_dir(&self) -> PathBuf {
-        self.event_kind_dir("marriages")
+        self.event_type_dir("marriages")
     }
 
     pub fn migrations_dir(&self) -> PathBuf {
-        self.event_kind_dir("migrations")
+        self.event_type_dir("migrations")
     }
 
     pub fn observations_dir(&self) -> PathBuf {
-        self.event_kind_dir("observations")
+        self.event_type_dir("observations")
     }
 
     pub fn moments_dir(&self) -> PathBuf {
-        self.event_kind_dir("moments")
+        self.event_type_dir("moments")
     }
 
     pub fn other_events_dir(&self) -> PathBuf {
-        self.event_kind_dir("other")
+        self.event_type_dir("other")
     }
 
     pub fn assertions_dir(&self) -> PathBuf {

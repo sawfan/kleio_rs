@@ -4,7 +4,7 @@ id = "person:alex-example"
 kind = "person"
 primary_name = "Alex Example"
 tags = ["fictional", "starter"]
-related = ["person:morgan-example"]
+related = ["person:morgan-example", "person:riley-example", "person:jordan-example-parent", "person:casey-example-parent", "person:taylor-example-partner"]
 
 [names.primary]
 full = "Alex Example"

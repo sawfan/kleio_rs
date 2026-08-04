@@ -8,14 +8,17 @@ use super::{
 
 pub const DEFAULT_PROJECT_ID: &str = DEFAULT_WORLD_SLUG;
 pub const DEFAULT_PERSON_SLUG: &str = "example-person";
-pub const DEFAULT_PLACE_ID: &str = "place:unknown-birth-place";
-pub const DEFAULT_SOURCE_ID: &str = "source:personal-knowledge";
+pub const DEFAULT_PLACE_ID: &str = "unknown-birth-place";
+pub const DEFAULT_SOURCE_ID: &str = "personal-knowledge";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalPersonOptions {
     pub person_slug: String,
     pub person_name: String,
     pub birth_date: Option<String>,
+    pub birth_location: Option<String>,
+    pub birth_latitude: Option<f64>,
+    pub birth_longitude: Option<f64>,
     pub create_birth_event: bool,
     pub force: bool,
 }
@@ -30,11 +33,14 @@ impl LocalPersonOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalBirthEventOptions {
     pub person_slug: String,
     pub person_name: String,
     pub birth_date: Option<String>,
+    pub birth_location: Option<String>,
+    pub birth_latitude: Option<f64>,
+    pub birth_longitude: Option<f64>,
     pub force: bool,
 }
 
@@ -48,13 +54,16 @@ impl LocalBirthEventOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalSkeletonOptions {
     pub project_id: String,
     pub title: String,
     pub person_slug: String,
     pub person_name: String,
     pub birth_date: Option<String>,
+    pub birth_location: Option<String>,
+    pub birth_latitude: Option<f64>,
+    pub birth_longitude: Option<f64>,
     pub force: bool,
 }
 
@@ -66,6 +75,9 @@ impl Default for LocalSkeletonOptions {
             person_slug: DEFAULT_PERSON_SLUG.to_string(),
             person_name: "Example Person".to_string(),
             birth_date: None,
+            birth_location: None,
+            birth_latitude: None,
+            birth_longitude: None,
             force: false,
         }
     }
@@ -94,6 +106,12 @@ pub fn create_local_person(
     options: &LocalPersonOptions,
 ) -> Result<(), LocalAuthoringError> {
     validate_slug(&options.person_slug, "person slug")?;
+    if options.birth_latitude.is_some() != options.birth_longitude.is_some() {
+        return Err(LocalAuthoringError::Validation {
+            message: "birth latitude and longitude must be provided together".to_string(),
+        });
+    }
+
     let world_root = world_root.as_ref();
     let paths = WorldPaths::new(world_root);
     create_dir(world_root, world_root)?;
@@ -117,6 +135,9 @@ pub fn create_local_person(
                 person_slug: options.person_slug.clone(),
                 person_name: options.person_name.clone(),
                 birth_date: options.birth_date.clone(),
+                birth_location: options.birth_location.clone(),
+                birth_latitude: options.birth_latitude,
+                birth_longitude: options.birth_longitude,
                 force: options.force,
             },
         )?;
@@ -130,19 +151,26 @@ pub fn create_local_birth_event(
     options: &LocalBirthEventOptions,
 ) -> Result<(), LocalAuthoringError> {
     validate_slug(&options.person_slug, "person slug")?;
+    if options.birth_latitude.is_some() != options.birth_longitude.is_some() {
+        return Err(LocalAuthoringError::Validation {
+            message: "birth latitude and longitude must be provided together".to_string(),
+        });
+    }
     let world_root = world_root.as_ref();
     let paths = WorldPaths::new(world_root);
     create_dir(world_root, world_root)?;
     create_dir(world_root, &paths.births_dir())?;
-    create_dir(world_root, &paths.places_dir())?;
     create_dir(world_root, &paths.sources_dir())?;
 
-    write_new_file(
-        world_root,
-        &paths.places_dir().join("unknown-birth-place.toml"),
-        &unknown_place_toml(),
-        false,
-    )?;
+    if options.birth_location.is_none() {
+        create_dir(world_root, &paths.places_dir())?;
+        write_new_file(
+            world_root,
+            &paths.places_dir().join("unknown-birth-place.toml"),
+            &unknown_place_toml(),
+            false,
+        )?;
+    }
     write_new_file(
         world_root,
         &paths.sources_dir().join("personal-knowledge.md"),
@@ -151,17 +179,15 @@ pub fn create_local_birth_event(
     )?;
     let birth_template = BirthEventTemplate {
         event_id: options.birth_event_id(),
-        person_id: options.person_id(),
         person_name: options.person_name.clone(),
         birth_date: options.birth_date.clone(),
+        birth_location: options.birth_location.clone(),
+        birth_latitude: options.birth_latitude,
+        birth_longitude: options.birth_longitude,
     };
     write_new_file(
         world_root,
-        &paths.births_dir().join(format!(
-            "{}-birth-{}.md",
-            options.birth_date.as_deref().unwrap_or("unknown-date"),
-            options.person_slug
-        )),
+        &paths.births_dir().join(birth_event_filename(options)),
         &birth_event_markdown(&birth_template),
         options.force,
     )?;
@@ -249,8 +275,8 @@ pub fn create_world_layout(
     )?;
     write_new_file(
         world_root,
-        &paths.vocab_schemas_dir().join("event-kinds.toml"),
-        &event_kinds_toml(),
+        &paths.vocab_schemas_dir().join("event-types.toml"),
+        &event_types_toml(),
         options.force,
     )?;
     write_new_file(
@@ -296,6 +322,9 @@ pub fn create_world_skeleton(
             person_slug: options.person_slug.clone(),
             person_name: options.person_name.clone(),
             birth_date: options.birth_date.clone(),
+            birth_location: options.birth_location.clone(),
+            birth_latitude: options.birth_latitude,
+            birth_longitude: options.birth_longitude,
             force: options.force,
         },
     )?;
@@ -485,9 +514,11 @@ struct PersonTemplate {
 
 struct BirthEventTemplate {
     event_id: String,
-    person_id: String,
     person_name: String,
     birth_date: Option<String>,
+    birth_location: Option<String>,
+    birth_latitude: Option<f64>,
+    birth_longitude: Option<f64>,
 }
 
 fn person_markdown(options: &PersonTemplate) -> String {
@@ -552,6 +583,23 @@ impl BirthSupportKind {
     }
 }
 
+fn birth_event_filename(options: &LocalBirthEventOptions) -> String {
+    let mut filename = format!("birth--person={}", options.person_slug);
+    if let Some(date) = options.birth_date.as_deref() {
+        filename.push_str("--local=");
+        filename.push_str(&filename_datetime(date));
+    }
+    if let (Some(latitude), Some(longitude)) = (options.birth_latitude, options.birth_longitude) {
+        filename.push_str(&format!("--lat={latitude}--lng={longitude}"));
+    }
+    filename.push_str(".md");
+    filename
+}
+
+fn filename_datetime(value: &str) -> String {
+    value.trim().replace(' ', "T").replace(':', "-")
+}
+
 fn birth_event_markdown(options: &BirthEventTemplate) -> String {
     let date_line = options
         .birth_date
@@ -570,34 +618,55 @@ fn birth_event_markdown(options: &BirthEventTemplate) -> String {
         })
         .unwrap_or_else(|| "date_precision = \"unknown\"\n".to_string());
     let assertions = birth_assertions_toml(options);
+    let location_line = birth_location_toml(options);
 
     format!(
-        r#"+++
+        r##"+++
 schema_version = 1
 id = "{}"
-kind = "birth"
-title = "{}"
+kind = "event"
+type = "birth"
 {}participants = [
-  {{ entity = "{}", role = "subject" }},
+  "self",
 ]
-places = [
-  {{ entity = "{}", role = "birthplace" }},
-]
-{}
+{}{}
 +++
 
 # Birth of {}
 
-Replace the placeholder place/source with the best available evidence when you have it.
-"#,
+Generated starter birth event. Edit the frontmatter above with the best available birth date, time, location, and source evidence. Bare participant, place, and source values are accepted where the context is clear.
+"##,
         escape_toml_basic(&options.event_id),
-        escape_toml_basic(&format!("Birth of {}", options.person_name)),
         date_line,
-        escape_toml_basic(&options.person_id),
-        DEFAULT_PLACE_ID,
+        location_line,
         assertions,
         options.person_name
     )
+}
+
+fn birth_location_toml(options: &BirthEventTemplate) -> String {
+    match (
+        options.birth_location.as_deref(),
+        options.birth_latitude,
+        options.birth_longitude,
+    ) {
+        (Some(location), Some(latitude), Some(longitude)) => format!(
+            "[location]\nlabel = \"{}\"\nlatitude = {}\nlongitude = {}\n",
+            escape_toml_basic(location),
+            latitude,
+            longitude
+        ),
+        (Some(location), None, None) => {
+            format!("location = \"{}\"\n", escape_toml_basic(location))
+        }
+        (None, Some(latitude), Some(longitude)) => {
+            format!(
+                "[location]\nlatitude = {}\nlongitude = {}\n",
+                latitude, longitude
+            )
+        }
+        _ => format!("places = [\n  \"{}\",\n]\n", DEFAULT_PLACE_ID),
+    }
 }
 
 fn birth_assertions_toml(options: &BirthEventTemplate) -> String {
@@ -665,10 +734,10 @@ Use this placeholder only until you have a more specific source.
     .to_string()
 }
 
-fn event_kinds_toml() -> String {
-    r#"id = "vocab:event-kinds"
+fn event_types_toml() -> String {
+    r#"id = "vocab:event-types"
 kind = "vocabulary"
-title = "Event kinds"
+title = "Event types"
 
 [[terms]]
 id = "birth"
@@ -681,9 +750,59 @@ label = "Death"
 class = "life"
 
 [[terms]]
+id = "marriage"
+label = "Marriage"
+class = "relationship"
+
+[[terms]]
+id = "divorce"
+label = "Divorce"
+class = "relationship"
+
+[[terms]]
+id = "adoption"
+label = "Adoption"
+class = "relationship"
+
+[[terms]]
+id = "residence"
+label = "Residence"
+class = "life"
+
+[[terms]]
+id = "education"
+label = "Education"
+class = "life"
+
+[[terms]]
+id = "military-service"
+label = "Military service"
+class = "life"
+
+[[terms]]
+id = "immigration"
+label = "Immigration"
+class = "migration"
+
+[[terms]]
+id = "emigration"
+label = "Emigration"
+class = "migration"
+
+[[terms]]
+id = "naturalization"
+label = "Naturalization"
+class = "civic"
+
+[[terms]]
 id = "census"
 label = "Census"
 class = "recorded-event"
+
+[[terms]]
+id = "name-change"
+label = "Name change"
+class = "identity"
 "#
     .to_string()
 }
@@ -761,7 +880,7 @@ title = "Example Life Timeline"
 entity = "{}"
 
 [filter]
-event_kinds = ["birth", "residence", "marriage", "death"]
+event_types = ["birth", "residence", "marriage", "death"]
 include_related_people = true
 include_context_events = false
 
@@ -844,6 +963,24 @@ mod tests {
     use super::*;
     use crate::local_authoring::{compile_local_data, compile_local_tree};
 
+    fn births_dir_event_filename(
+        person_slug: &str,
+        birth_date: Option<&str>,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+    ) -> String {
+        let options = LocalBirthEventOptions {
+            person_slug: person_slug.to_string(),
+            person_name: "Example Person".to_string(),
+            birth_date: birth_date.map(ToOwned::to_owned),
+            birth_location: None,
+            birth_latitude: latitude,
+            birth_longitude: longitude,
+            force: false,
+        };
+        format!("events/births/{}", birth_event_filename(&options))
+    }
+
     #[test]
     fn birth_event_with_time_gets_separate_time_support_assertion() {
         let temp_dir = std::env::temp_dir().join(format!(
@@ -860,15 +997,25 @@ mod tests {
                 person_slug: "alex-example".to_string(),
                 person_name: "Alex Example".to_string(),
                 birth_date: Some("1900-01-01 07:18".to_string()),
+                birth_location: None,
+                birth_latitude: None,
+                birth_longitude: None,
                 force: false,
             },
         )
         .expect("birth event");
 
-        let event_text = fs::read_to_string(
-            temp_dir.join("events/births/1900-01-01 07:18-birth-alex-example.md"),
-        )
+        let event_text = fs::read_to_string(temp_dir.join(births_dir_event_filename(
+            "alex-example",
+            Some("1900-01-01 07:18"),
+            None,
+            None,
+        )))
         .expect("event text");
+        assert!(event_text.contains("type = \"birth\""));
+        assert!(event_text.contains("participants = ["));
+        assert!(event_text.contains("\"self\""));
+        assert!(!event_text.contains("title ="));
         assert!(event_text.contains("date_precision = \"minute\""));
         assert!(event_text.contains("target = \"#date\""));
         assert!(event_text.contains("target = \"#time\""));
@@ -891,6 +1038,48 @@ mod tests {
     }
 
     #[test]
+    fn birth_event_can_use_inline_location_without_placeholder_place() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-birth-location-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        create_local_birth_event(
+            &temp_dir,
+            &LocalBirthEventOptions {
+                person_slug: "alex-example".to_string(),
+                person_name: "Alex Example".to_string(),
+                birth_date: Some("1900-01-01".to_string()),
+                birth_location: Some("Example Town".to_string()),
+                birth_latitude: None,
+                birth_longitude: None,
+                force: false,
+            },
+        )
+        .expect("birth event");
+
+        let event_text = fs::read_to_string(temp_dir.join(births_dir_event_filename(
+            "alex-example",
+            Some("1900-01-01"),
+            None,
+            None,
+        )))
+        .expect("event text");
+        assert!(event_text.contains("location = \"Example Town\""));
+        assert!(!event_text.contains("role = \"birthplace\""));
+        assert!(
+            !temp_dir
+                .join("entities/places/unknown-birth-place.toml")
+                .exists()
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
     fn creates_starter_world_skeleton() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-local-skeleton-{}-{}",
@@ -906,6 +1095,9 @@ mod tests {
             person_slug: "alex-example".to_string(),
             person_name: "Alex Example".to_string(),
             birth_date: Some("1900-01-01".to_string()),
+            birth_location: None,
+            birth_latitude: None,
+            birth_longitude: None,
             force: false,
         };
 
@@ -917,7 +1109,12 @@ mod tests {
         assert!(world_root.join("imports/gedcom/README.md").exists());
         assert!(
             world_root
-                .join("events/births/1900-01-01-birth-alex-example.md")
+                .join(births_dir_event_filename(
+                    "alex-example",
+                    Some("1900-01-01"),
+                    None,
+                    None,
+                ))
                 .exists()
         );
         assert!(world_root.join("schemas/components/identity.toml").exists());
@@ -936,9 +1133,16 @@ mod tests {
                 .any(|record| record.id == "event:birth-alex-example")
         );
 
-        let birth_event_text =
-            fs::read_to_string(world_root.join("events/births/1900-01-01-birth-alex-example.md"))
-                .expect("birth event text");
+        let birth_event_text = fs::read_to_string(world_root.join(births_dir_event_filename(
+            "alex-example",
+            Some("1900-01-01"),
+            None,
+            None,
+        )))
+        .expect("birth event text");
+        assert!(birth_event_text.contains("type = \"birth\""));
+        assert!(birth_event_text.contains("\"self\""));
+        assert!(!birth_event_text.contains("title ="));
         assert!(birth_event_text.contains("target = \"#date\""));
         assert!(!birth_event_text.contains("target = \"#time\""));
         assert!(birth_event_text.contains("confidence = \"high\""));

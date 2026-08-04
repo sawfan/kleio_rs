@@ -152,12 +152,12 @@ fn compiles_local_event_collections_into_timeline_projection() {
     fs::create_dir_all(temp_dir.join("collections")).expect("collections dir");
     fs::write(
         temp_dir.join("events/observations/first.md"),
-        "+++\nid = \"event:first\"\nkind = \"observation\"\ntitle = \"First event\"\ndate = 2026-01-01\n+++\n\n# First\n",
+        "+++\nid = \"event:first\"\nkind = \"event\"\ntype = \"observation\"\ntitle = \"First event\"\ndate = 2026-01-01\n+++\n\n# First\n",
     )
     .expect("first event");
     fs::write(
         temp_dir.join("events/observations/second.md"),
-        "+++\nid = \"event:second\"\nkind = \"observation\"\ntitle = \"Second event\"\ndate = 2026-01-02\n+++\n\n# Second\n",
+        "+++\nid = \"event:second\"\nkind = \"event\"\ntype = \"observation\"\ntitle = \"Second event\"\ndate = 2026-01-02\n+++\n\n# Second\n",
     )
     .expect("second event");
     fs::write(
@@ -197,6 +197,197 @@ fn rejects_local_event_collection_missing_member() {
 }
 
 #[test]
+fn compiles_inline_event_location_into_timeline_projection() {
+    let temp_dir = test_temp_dir("inline-location");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::create_dir_all(temp_dir.join("sources")).expect("sources dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Alex\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("sources/personal-knowledge.md"),
+        "+++\nid = \"source:personal-knowledge\"\nkind = \"note\"\ntitle = \"Personal knowledge\"\n+++\n\n# Source\n",
+    )
+    .expect("source");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\ntime = \"1900-01-01 07:18\"\nlocation = \"Example Town\"\nparticipants = [\"person:alex-example\"]\nassertions = []\n+++\n\n# Birth\n",
+    )
+    .expect("birth event");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(timeline.events.len(), 1);
+    assert_eq!(
+        timeline.events[0].title.as_deref(),
+        Some("Alex Example was born")
+    );
+    assert_eq!(
+        timeline.events[0].places,
+        vec![serde_json::json!({
+            "entity": "place:inline:event-birth-alex-example-location",
+            "role": "birthplace",
+            "label": "Example Town",
+            "generated": true,
+        })]
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn filename_hints_fill_birth_datetime_participant_and_location_coordinates() {
+    let temp_dir = test_temp_dir("filename-hints-birth");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Alex\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("events/births/birth--person=alex-example--local=1900-01-01T12-04--lat=40.7128--lng=-74.0060.md"),
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\n\n[location]\nlabel = \"Example Memorial Hospital\"\n+++\n\n# Birth\n",
+    )
+    .expect("birth event");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(timeline.events.len(), 1);
+    assert_eq!(timeline.events[0].event_type, "birth");
+    assert_eq!(timeline.events[0].time.as_deref(), Some("1900-01-01 12:04"));
+    assert_eq!(
+        timeline.events[0].participants,
+        vec![serde_json::json!({ "entity": "person:alex-example", "role": "subject" })]
+    );
+    assert_eq!(
+        timeline.events[0].places,
+        vec![serde_json::json!({
+            "entity": "place:inline:event-birth-alex-example-location",
+            "role": "birthplace",
+            "label": "Example Memorial Hospital",
+            "latitude": 40.7128,
+            "longitude": -74.006,
+            "generated": true,
+        })]
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn compiles_typed_event_with_participant_shorthand() {
+    let temp_dir = test_temp_dir("typed-event-participant-shorthand");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Alex\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\ntime = \"1900-01-01\"\nparticipants = [\"alex-example\"]\nassertions = []\n+++\n\n# Birth\n",
+    )
+    .expect("birth event");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(timeline.events.len(), 1);
+    assert_eq!(timeline.events[0].event_type, "birth");
+    assert_eq!(
+        timeline.events[0].participants,
+        vec![serde_json::json!({ "entity": "person:alex-example", "role": "subject" })]
+    );
+    assert_eq!(
+        timeline.events[0].title.as_deref(),
+        Some("Alex Example was born")
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn compiles_place_shorthand_with_default_event_role() {
+    let temp_dir = test_temp_dir("place-shorthand-default-role");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("entities/places")).expect("places dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Alex\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("entities/places/example-town.md"),
+        "+++\nid = \"place:example-town\"\nkind = \"place\"\nprimary_name = \"Example Town\"\n+++\n\n# Example Town\n",
+    )
+    .expect("place");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\nparticipants = [\"alex-example\"]\nplaces = [\"example-town\"]\nassertions = []\n+++\n\n# Birth\n",
+    )
+    .expect("birth event");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(
+        timeline.events[0].places,
+        vec![serde_json::json!({ "entity": "place:example-town", "role": "birthplace" })]
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn explicit_event_title_overrides_default_label() {
+    let temp_dir = test_temp_dir("explicit-event-title");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-example.md"),
+        "+++\nid = \"person:alex-example\"\nkind = \"person\"\nprimary_name = \"Alex Example\"\n+++\n\n# Alex\n",
+    )
+    .expect("person");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+"+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\ntitle = \"Custom birth label\"\nparticipants = [\"person:alex-example\"]\nassertions = []\n+++\n\n# Birth\n"
+    )
+    .expect("birth event");
+
+    let timeline = compile_local_timeline(&temp_dir, None).expect("compile timeline");
+
+    assert_eq!(
+        timeline.events[0].title.as_deref(),
+        Some("Custom birth label")
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn rejects_empty_inline_event_location() {
+    let temp_dir = test_temp_dir("empty-inline-location");
+    fs::create_dir_all(temp_dir.join("events/births")).expect("events dir");
+    fs::write(
+        temp_dir.join("events/births/birth-alex-example.md"),
+"+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\nlocation = \"\"\nparticipants = []\nassertions = []\n+++\n\n# Birth\n"
+    )
+    .expect("birth event");
+
+    let err = compile_local_data(&temp_dir).expect_err("empty location should fail");
+    assert!(
+        err.to_string().contains("location"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn writes_private_tree_json() {
     let temp_dir = test_temp_dir("write-tree-json");
     fs::create_dir_all(temp_dir.join("records")).expect("records dir");
@@ -218,6 +409,25 @@ fn writes_private_tree_json() {
 }
 
 #[test]
+fn rejects_event_type_with_whitespace() {
+    let temp_dir = test_temp_dir("bad-event-type");
+    fs::create_dir_all(temp_dir.join("events/other")).expect("events dir");
+    fs::write(
+        temp_dir.join("events/other/bad.md"),
+        "+++\nid = \"event:bad\"\nkind = \"event\"\ntype = \"bad type\"\nparticipants = []\nassertions = []\n+++\n\n# Bad\n",
+    )
+    .expect("event");
+
+    let err = compile_local_data(&temp_dir).expect_err("bad event type should fail");
+    assert!(
+        err.to_string().contains("bad type"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn rejects_missing_event_assertion_reference() {
     let temp_dir = test_temp_dir("missing-assertion");
     fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
@@ -229,7 +439,7 @@ fn rejects_missing_event_assertion_reference() {
     .expect("person");
     fs::write(
         temp_dir.join("events/births/birth-alex-example.md"),
-        "+++\nid = \"event:birth-alex-example\"\nkind = \"birth\"\nparticipants = [{ entity = \"person:alex-example\", role = \"subject\" }]\nassertions = [\"assertion:missing\"]\n+++\n\n# Note\n",
+        "+++\nid = \"event:birth-alex-example\"\nkind = \"event\"\ntype = \"birth\"\nparticipants = [\"alex-example\"]\nassertions = [\"assertion:missing\"]\nsources = [\"personal-knowledge\"]\n+++\n\n# Note\n",
     )
     .expect("event");
 
@@ -403,7 +613,7 @@ fn allows_event_support_assertion_without_value() {
     fs::create_dir_all(temp_dir.join("assertions")).expect("assertions dir");
     fs::write(
         temp_dir.join("events/observations/example.md"),
-        "+++\nid = \"event:example\"\nkind = \"observation\"\ntitle = \"Example\"\nassertions = [\"assertion:example-support\"]\n+++\n\n# Example\n",
+"+++\nid = \"event:example\"\nkind = \"event\"\ntype = \"observation\"\ntitle = \"Example\"\nassertions = [\"assertion:example-support\"]\n+++\n\n# Example\n"
     )
     .expect("event");
     fs::write(

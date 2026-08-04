@@ -1,9 +1,15 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use super::{
     LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, LocalTomlDocument,
-    compile_local_data,
+    compile_local_data, event_locations,
+    event_profiles::{
+        default_event_label, event_participant_entity_ids, event_participants, local_event_type_id,
+    },
+    refs::normalize_person_id,
+    sources::source_items,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,7 +62,7 @@ pub struct LocalTimelineInlineAssertion {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalTimelineEvent {
     pub id: String,
-    pub kind: String,
+    pub event_type: String,
     pub title: Option<String>,
     pub time: Option<String>,
     pub participants: Vec<serde_json::Value>,
@@ -70,7 +76,7 @@ pub struct LocalTimelineEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TimelineFilter {
     subject: Option<String>,
-    event_kinds: Vec<String>,
+    event_types: Vec<String>,
     related_entities: Vec<String>,
     include_context_events: bool,
 }
@@ -125,12 +131,13 @@ fn timeline_from_local_data_bundle(
     let filter = view
         .map(|view| timeline_filter(view, &bundle.toml_documents))
         .unwrap_or_default();
+    let entity_names = entity_name_index(&bundle.markdown_records);
     let mut events = bundle
         .markdown_records
         .iter()
         .filter(|record| is_event_record(record))
         .filter(|record| timeline_filter_includes_record(record, &filter))
-        .map(timeline_event_from_record)
+        .map(|record| timeline_event_from_record(record, &entity_names))
         .collect::<Vec<_>>();
     let collections = timeline_collections_from_documents(&bundle.toml_documents, &events);
 
@@ -250,8 +257,8 @@ fn timeline_filter(view: &LocalTomlDocument, documents: &[LocalTomlDocument]) ->
         .get("subject")
         .and_then(|subject| subject.get("entity"))
         .and_then(serde_json::Value::as_str)
-        .map(ToOwned::to_owned);
-    let event_kinds = timeline_view_event_kinds(view).unwrap_or_default();
+        .map(normalize_person_id);
+    let event_types = timeline_view_event_types(view).unwrap_or_default();
     let include_related_people = view
         .data
         .get("filter")
@@ -272,7 +279,7 @@ fn timeline_filter(view: &LocalTomlDocument, documents: &[LocalTomlDocument]) ->
 
     TimelineFilter {
         subject,
-        event_kinds,
+        event_types,
         related_entities,
         include_context_events,
     }
@@ -302,7 +309,8 @@ fn related_entities_for_subject(subject: &str, documents: &[LocalTomlDocument]) 
 }
 
 fn timeline_filter_includes_record(record: &LocalMarkdownRecord, filter: &TimelineFilter) -> bool {
-    if !filter.event_kinds.is_empty() && !filter.event_kinds.iter().any(|kind| kind == &record.kind)
+    let record_kind = local_event_type_id(record).unwrap_or_else(|| record.kind.clone());
+    if !filter.event_types.is_empty() && !filter.event_types.iter().any(|kind| kind == &record_kind)
     {
         return false;
     }
@@ -326,10 +334,10 @@ fn timeline_filter_includes_record(record: &LocalMarkdownRecord, filter: &Timeli
     filter.include_context_events && participant_ids.is_empty()
 }
 
-fn timeline_view_event_kinds(view: &LocalTomlDocument) -> Option<Vec<String>> {
+fn timeline_view_event_types(view: &LocalTomlDocument) -> Option<Vec<String>> {
     view.data
         .get("filter")
-        .and_then(|filter| filter.get("event_kinds"))
+        .and_then(|filter| filter.get("event_types"))
         .and_then(serde_json::Value::as_array)
         .map(|values| {
             values
@@ -340,28 +348,77 @@ fn timeline_view_event_kinds(view: &LocalTomlDocument) -> Option<Vec<String>> {
         })
 }
 
-fn timeline_event_from_record(record: &LocalMarkdownRecord) -> LocalTimelineEvent {
+fn timeline_event_from_record(
+    record: &LocalMarkdownRecord,
+    entity_names: &BTreeMap<String, String>,
+) -> LocalTimelineEvent {
     LocalTimelineEvent {
         id: record.id.clone(),
-        kind: record.kind.clone(),
-        title: record.title.clone().or_else(|| {
-            record
-                .attributes
-                .get("primary_name")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        }),
+        event_type: local_event_type_id(record).unwrap_or_else(|| record.kind.clone()),
+        title: event_title(record, entity_names),
         time: record
             .date
             .clone()
             .or_else(|| record.attributes.get("time").and_then(json_value_as_string)),
-        participants: json_array(record.attributes.get("participants")),
-        places: json_array(record.attributes.get("places")),
+        participants: event_participants(record),
+        places: event_locations(record),
         assertions: string_array(record.attributes.get("assertions")),
         inline_assertions: inline_assertions(record),
         path: record.path.clone(),
         notes_markdown: record.notes_markdown.clone(),
     }
+}
+
+fn event_title(
+    record: &LocalMarkdownRecord,
+    entity_names: &BTreeMap<String, String>,
+) -> Option<String> {
+    record
+        .title
+        .clone()
+        .or_else(|| {
+            record
+                .attributes
+                .get("primary_name")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| default_event_label(record, |entity| entity_names.get(entity).cloned()))
+}
+
+fn entity_name_index(records: &[LocalMarkdownRecord]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.kind.as_str(),
+                "person" | "place" | "organization" | "object" | "concept"
+            )
+        })
+        .filter_map(|record| markdown_record_name(record).map(|name| (record.id.clone(), name)))
+        .collect()
+}
+
+fn markdown_record_name(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .title
+        .clone()
+        .or_else(|| {
+            record
+                .attributes
+                .get("primary_name")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            record
+                .attributes
+                .get("names")
+                .and_then(|names| names.get("primary"))
+                .and_then(|primary| primary.get("full"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn inline_assertions(record: &LocalMarkdownRecord) -> Vec<LocalTimelineInlineAssertion> {
@@ -394,17 +451,13 @@ fn inline_assertion(
             .get("confidence")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
-        sources: assertion
-            .get("sources")
-            .and_then(serde_json::Value::as_array)
-            .map(|sources| {
-                sources
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect()
+        sources: source_items(assertion.get("sources"))
+            .into_iter()
+            .filter_map(|source| match source {
+                serde_json::Value::String(source) => Some(source),
+                value => Some(value.to_string()),
             })
-            .unwrap_or_default(),
+            .collect(),
         note: assertion
             .get("note")
             .and_then(serde_json::Value::as_str)
@@ -414,31 +467,17 @@ fn inline_assertion(
 }
 
 fn is_event_record(record: &LocalMarkdownRecord) -> bool {
-    record.path.starts_with("events/") || record.attributes.contains_key("participants")
+    record.kind == "event"
 }
 
 fn participant_entity_ids(record: &LocalMarkdownRecord) -> Vec<String> {
-    json_array(record.attributes.get("participants"))
-        .into_iter()
-        .filter_map(|item| {
-            item.get("entity")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .collect()
+    event_participant_entity_ids(record)
 }
 
 fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|existing| existing == value) {
         values.push(value.to_string());
     }
-}
-
-fn json_array(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
-    value
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default()
 }
 
 fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -541,12 +580,12 @@ mod tests {
         .expect("relationship");
         fs::write(
             world_root.join("events/observations/related-observation.md"),
-            "+++\nschema_version = 1\nid = \"event:related-observation\"\nkind = \"residence\"\ntitle = \"Related observation\"\ntime = \"1905-01-01\"\nparticipants = [{ entity = \"person:morgan-example\", role = \"subject\" }]\nplaces = []\nassertions = []\n+++\n\n# Related\n",
+"+++\nschema_version = 1\nid = \"event:related-observation\"\nkind = \"event\"\ntype = \"residence\"\ntitle = \"Related observation\"\ntime = \"1905-01-01\"\nparticipants = [\"person:morgan-example\"]\nplaces = []\nassertions = []\n+++\n\n# Related\n"
         )
         .expect("related event");
         fs::write(
             world_root.join("events/observations/unrelated-observation.md"),
-            "+++\nschema_version = 1\nid = \"event:unrelated-observation\"\nkind = \"residence\"\ntitle = \"Unrelated observation\"\ntime = \"1906-01-01\"\nparticipants = []\nplaces = []\nassertions = []\n+++\n\n# Unrelated\n",
+"+++\nschema_version = 1\nid = \"event:unrelated-observation\"\nkind = \"event\"\ntype = \"residence\"\ntitle = \"Unrelated observation\"\ntime = \"1906-01-01\"\nparticipants = []\nplaces = []\nassertions = []\n+++\n\n# Unrelated\n"
         )
         .expect("unrelated event");
 

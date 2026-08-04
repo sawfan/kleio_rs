@@ -1,6 +1,12 @@
 use std::collections::BTreeSet;
 
-use super::{LocalAuthoringError, LocalMarkdownRecord, LocalTomlDocument};
+use super::{
+    LocalAuthoringError, LocalMarkdownRecord, LocalTomlDocument,
+    event_profiles::{event_participants, validate_event_type_value},
+    locations::{normalize_place_entity_id, validate_inline_location_value, validate_place_item},
+    refs::{normalize_person_id, normalize_source_id, validate_contextual_id},
+    sources::validate_source_items,
+};
 
 pub(super) fn validate_local_data(
     markdown_records: &[LocalMarkdownRecord],
@@ -49,11 +55,19 @@ pub(super) fn validate_local_data(
         }
 
         if let Some(participants) = record.attributes.get("participants") {
-            validate_entity_reference_items(record, participants, &ids, "participants")?;
+            validate_participant_items(record, participants, &ids)?;
         }
 
         if let Some(places) = record.attributes.get("places") {
-            validate_entity_reference_items(record, places, &ids, "places")?;
+            validate_place_items(record, places, &ids)?;
+        }
+
+        if let Some(location) = record.attributes.get("location") {
+            validate_inline_location_value(&record.path, location, "location")?;
+        }
+
+        if let Some(locations) = record.attributes.get("locations") {
+            validate_inline_location_value(&record.path, locations, "locations")?;
         }
 
         if let Some(assertions) = record.attributes.get("assertions") {
@@ -61,7 +75,26 @@ pub(super) fn validate_local_data(
         }
 
         if let Some(sources) = record.attributes.get("sources") {
-            validate_id_references(record, sources, &ids, "sources")?;
+            validate_source_items(&record.path, sources, &ids, "sources")?;
+        }
+
+        if record.path.starts_with("events/") && record.kind != "event" {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} event records must use `kind = \"event\"`", record.path),
+            });
+        }
+
+        if record.kind == "event" {
+            let Some(event_type) = record
+                .attributes
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+            else {
+                return Err(LocalAuthoringError::Validation {
+                    message: format!("{} event record missing `type`", record.path),
+                });
+            };
+            validate_event_type_value(event_type, &record.path)?;
         }
 
         if record.path.starts_with("assertions/") {
@@ -116,7 +149,9 @@ fn validate_relationship_document(
     };
 
     for (field, person_id) in [("source", source), ("target", target)] {
-        if !ids.contains(person_id) {
+        validate_contextual_id(person_id, &format!("relationship {field}"))?;
+        let person_id = resolve_contextual_id_from_set(person_id, ids, normalize_person_id);
+        if !ids.contains(&person_id) {
             return Err(LocalAuthoringError::Validation {
                 message: format!(
                     "{} references missing relationship {field} `{person_id}`",
@@ -138,7 +173,9 @@ fn validate_relationship_document(
                     message: format!("{} `sources` must contain only strings", document.path),
                 });
             };
-            if !ids.contains(source_id) {
+            validate_contextual_id(source_id, "relationship source reference")?;
+            let source_id = resolve_contextual_id_from_set(source_id, ids, normalize_source_id);
+            if !ids.contains(&source_id) {
                 return Err(LocalAuthoringError::Validation {
                     message: format!(
                         "{} references missing relationship source `{source_id}`",
@@ -150,6 +187,18 @@ fn validate_relationship_document(
     }
 
     Ok(())
+}
+
+fn resolve_contextual_id_from_set(
+    id: &str,
+    ids: &BTreeSet<String>,
+    normalize: fn(&str) -> String,
+) -> String {
+    if ids.contains(id) {
+        id.to_string()
+    } else {
+        normalize(id)
+    }
 }
 
 fn validate_event_collection_document(
@@ -208,7 +257,8 @@ fn validate_optional_view_entity_reference(
         return Ok(());
     };
 
-    if !ids.contains(entity_id) {
+    let entity_id = resolve_contextual_id_from_set(entity_id, ids, normalize_person_id);
+    if !ids.contains(&entity_id) {
         return Err(LocalAuthoringError::Validation {
             message: format!(
                 "{} references missing {label} entity `{entity_id}`",
@@ -228,31 +278,92 @@ fn nested_string<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a 
     current.as_str()
 }
 
-fn validate_entity_reference_items(
+fn validate_participant_items(
     record: &LocalMarkdownRecord,
     items: &serde_json::Value,
     ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(raw_items) = items.as_array() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} `participants` must be an array", record.path),
+        });
+    };
+
+    for raw_item in raw_items {
+        match raw_item {
+            serde_json::Value::String(entity_id) => {
+                validate_contextual_id(entity_id, "event participant")?;
+                validate_referenced_id(
+                    record,
+                    &normalize_person_id(entity_id),
+                    ids,
+                    "participants",
+                )?;
+            }
+            serde_json::Value::Object(_) => {}
+            _ => {
+                return Err(LocalAuthoringError::Validation {
+                    message: format!(
+                        "{} `participants` entries must be entity ids or participant tables",
+                        record.path
+                    ),
+                });
+            }
+        }
+    }
+
+    for item in event_participants(record) {
+        let Some(entity_id) = item.get("entity").and_then(serde_json::Value::as_str) else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} participant item missing `entity`", record.path),
+            });
+        };
+        validate_referenced_id(record, entity_id, ids, "participants")?;
+    }
+
+    Ok(())
+}
+
+fn validate_referenced_id(
+    record: &LocalMarkdownRecord,
+    id: &str,
+    ids: &BTreeSet<String>,
     field: &str,
+) -> Result<(), LocalAuthoringError> {
+    if !ids.contains(id) {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} references missing {field} entity `{id}`", record.path),
+        });
+    }
+    Ok(())
+}
+
+fn validate_place_items(
+    record: &LocalMarkdownRecord,
+    items: &serde_json::Value,
+    ids: &BTreeSet<String>,
 ) -> Result<(), LocalAuthoringError> {
     let Some(items) = items.as_array() else {
         return Err(LocalAuthoringError::Validation {
-            message: format!("{} `{field}` must be an array", record.path),
+            message: format!("{} `places` must be an array", record.path),
         });
     };
 
     for item in items {
-        let Some(entity_id) = item.get("entity").and_then(serde_json::Value::as_str) else {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} {field} item missing `entity`", record.path),
-            });
-        };
-        if !ids.contains(entity_id) {
-            return Err(LocalAuthoringError::Validation {
-                message: format!(
-                    "{} references missing {field} entity `{entity_id}`",
-                    record.path
-                ),
-            });
+        match item {
+            serde_json::Value::String(entity_id) => {
+                validate_contextual_id(entity_id, "event place")?;
+                let entity_id = normalize_place_entity_id(entity_id);
+                if !ids.contains(&entity_id) {
+                    return Err(LocalAuthoringError::Validation {
+                        message: format!(
+                            "{} references missing places entity `{entity_id}`",
+                            record.path
+                        ),
+                    });
+                }
+            }
+            _ => validate_place_item(&record.path, item, ids)?,
         }
     }
 
@@ -307,40 +418,7 @@ fn validate_inline_assertion(
     validate_assertion_target(record, target, ids)?;
 
     if let Some(sources) = assertion.get("sources") {
-        validate_inline_sources(record, sources, ids)?;
-    }
-
-    Ok(())
-}
-
-fn validate_inline_sources(
-    record: &LocalMarkdownRecord,
-    values: &serde_json::Value,
-    ids: &BTreeSet<String>,
-) -> Result<(), LocalAuthoringError> {
-    let Some(values) = values.as_array() else {
-        return Err(LocalAuthoringError::Validation {
-            message: format!(
-                "{} inline assertion `sources` must be an array",
-                record.path
-            ),
-        });
-    };
-
-    for value in values {
-        let Some(id) = value.as_str() else {
-            return Err(LocalAuthoringError::Validation {
-                message: format!(
-                    "{} inline assertion `sources` must contain only strings",
-                    record.path
-                ),
-            });
-        };
-        if !ids.contains(id) {
-            return Err(LocalAuthoringError::Validation {
-                message: format!("{} references missing sources id `{id}`", record.path),
-            });
-        }
+        validate_source_items(&record.path, sources, ids, "inline assertion `sources`")?;
     }
 
     Ok(())
@@ -387,7 +465,8 @@ fn validate_id_references(
                 message: format!("{} `{field}` must contain only strings", record.path),
             });
         };
-        if !ids.contains(id) {
+        let id = normalize_source_id(id);
+        if !ids.contains(&id) {
             return Err(LocalAuthoringError::Validation {
                 message: format!("{} references missing {field} id `{id}`", record.path),
             });

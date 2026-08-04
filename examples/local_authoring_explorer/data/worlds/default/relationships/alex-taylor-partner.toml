@@ -1,0 +1,8 @@
+schema_version = 1
+id = "relationship:alex-taylor-partner"
+kind = "relationship"
+title = "Alex and Taylor example partnership"
+relationship = "partner"
+source = "alex-example"
+target = "taylor-example-partner"
+sources = []

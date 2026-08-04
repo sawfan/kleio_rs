@@ -3,8 +3,11 @@ use std::fs;
 use std::path::Path;
 
 use super::{
-    LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, compile_local_data,
+    LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, compile_local_data, event_locations,
+    event_profiles::{event_participants, local_event_type_id},
     infer_local_kinship_relationships,
+    refs::{normalize_person_id, normalize_source_id, resolve_contextual_id},
+    sources::source_items,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -181,8 +184,10 @@ fn ecs_relationships_from_documents(
         .filter(|document| document.kind.as_deref() == Some("relationship"))
         .filter_map(|document| {
             let id = document.id.clone()?;
-            let source = document.data.get("source")?.as_str()?.to_string();
-            let target = document.data.get("target")?.as_str()?.to_string();
+            let source =
+                resolve_contextual_id(document.data.get("source")?.as_str()?, normalize_person_id);
+            let target =
+                resolve_contextual_id(document.data.get("target")?.as_str()?, normalize_person_id);
             let relationship_kind = document
                 .data
                 .get("relationship")
@@ -209,7 +214,7 @@ fn ecs_relationships_from_documents(
                     values
                         .iter()
                         .filter_map(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned)
+                        .map(normalize_source_id)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -292,8 +297,10 @@ fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEnti
 
     if is_event_record(record) {
         components.insert(
-            "HistoricalEvent".to_string(),
-            serde_json::json!({ "event_kind": record.kind }),
+            "EventType".to_string(),
+            serde_json::json!({
+                "value": local_event_type_id(record).unwrap_or_else(|| record.kind.clone())
+            }),
         );
         if let Some(value) = record
             .date
@@ -305,10 +312,17 @@ fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEnti
                 serde_json::json!({ "value": value }),
             );
         }
-        if let Some(participants) = record.attributes.get("participants") {
+        if record.attributes.contains_key("participants") {
             components.insert(
                 "Participants".to_string(),
-                serde_json::json!({ "items": participants }),
+                serde_json::json!({ "items": event_participants(record) }),
+            );
+        }
+        let locations = event_locations(record);
+        if !locations.is_empty() {
+            components.insert(
+                "Locations".to_string(),
+                serde_json::json!({ "items": locations }),
             );
         }
     }
@@ -368,10 +382,7 @@ fn inline_assertion_entity(
             "target": target,
             "value": assertion.get("value"),
             "confidence": assertion.get("confidence"),
-            "sources": assertion
-                .get("sources")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!([])),
+            "sources": source_items(assertion.get("sources")),
             "note": assertion.get("note"),
             "inline_in": record.id,
         }),
@@ -401,7 +412,7 @@ fn is_entity_record(record: &LocalMarkdownRecord) -> bool {
 }
 
 fn is_event_record(record: &LocalMarkdownRecord) -> bool {
-    record.path.starts_with("events/") || record.attributes.contains_key("participants")
+    record.kind == "event"
 }
 
 fn json_string_ref(value: &serde_json::Value) -> Option<&String> {

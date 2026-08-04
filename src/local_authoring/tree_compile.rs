@@ -5,7 +5,14 @@ use crate::{
     Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
 };
 
-use super::{LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, LocalTomlDocument};
+use super::{
+    LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, LocalTomlDocument,
+    event_profiles::{
+        default_event_label, event_participants as normalized_event_participants,
+        local_event_type_id,
+    },
+    refs::{normalize_person_id, normalize_source_id, resolve_contextual_id},
+};
 
 pub(super) fn tree_from_local_data_bundle(
     bundle: &LocalDataBundle,
@@ -50,6 +57,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         .map(ToOwned::to_owned);
 
     let mut person_ids = BTreeMap::<String, PersonId>::new();
+    let mut person_names = BTreeMap::<String, String>::new();
     for record in bundle
         .markdown_records
         .iter()
@@ -58,6 +66,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         let person_id = tree.next_person_id();
         person_ids.insert(record.id.clone(), person_id);
         let display = markdown_title(record).unwrap_or_else(|| record.id.clone());
+        person_names.insert(record.id.clone(), display.clone());
         let sex = record
             .attributes
             .get("sex")
@@ -129,11 +138,17 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         let event_id = next_event_id(&tree);
         let mut provenance = local_record_provenance(record);
         for source_id in string_array_attribute(record.attributes.get("sources")) {
-            provenance.sources.push(SourceRef(source_id));
+            provenance
+                .sources
+                .push(SourceRef(normalize_source_id(&source_id)));
         }
         let event = GenealogyEvent {
             id: event_id,
-            kind: event_kind_from_local_kind(&record.kind),
+            kind: event_type_from_local_type(
+                local_event_type_id(record)
+                    .as_deref()
+                    .unwrap_or(record.kind.as_str()),
+            ),
             date: record
                 .date
                 .as_ref()
@@ -155,7 +170,11 @@ pub(super) fn tree_from_local_data_bundle_with_view(
                 .get("time_zone")
                 .and_then(toml_json_value_as_string),
             place: None,
-            description: markdown_title(record).or_else(|| record.summary.clone()),
+            description: markdown_title(record)
+                .or_else(|| record.summary.clone())
+                .or_else(|| {
+                    default_event_label(record, |entity| person_names.get(entity).cloned())
+                }),
             participants: participants.clone(),
             provenance,
         };
@@ -175,26 +194,24 @@ pub(super) fn tree_from_local_data_bundle_with_view(
     {
         let source = required_json_string(document, "source")?;
         let target = required_json_string(document, "target")?;
-        let source_id =
-            person_ids
-                .get(source)
-                .copied()
-                .ok_or_else(|| LocalAuthoringError::Validation {
-                    message: format!(
-                        "{} references missing source person `{source}`",
-                        document.path
-                    ),
-                })?;
-        let target_id =
-            person_ids
-                .get(target)
-                .copied()
-                .ok_or_else(|| LocalAuthoringError::Validation {
-                    message: format!(
-                        "{} references missing target person `{target}`",
-                        document.path
-                    ),
-                })?;
+        let source_key = resolve_person_key(source, &person_ids);
+        let target_key = resolve_person_key(target, &person_ids);
+        let source_id = person_ids.get(&source_key).copied().ok_or_else(|| {
+            LocalAuthoringError::Validation {
+                message: format!(
+                    "{} references missing source person `{source_key}`",
+                    document.path
+                ),
+            }
+        })?;
+        let target_id = person_ids.get(&target_key).copied().ok_or_else(|| {
+            LocalAuthoringError::Validation {
+                message: format!(
+                    "{} references missing target person `{target_key}`",
+                    document.path
+                ),
+            }
+        })?;
         let kind = document
             .data
             .get("relationship")
@@ -234,13 +251,15 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         .and_then(|document| document.data.get("root"))
         .and_then(|root| root.get("entity"))
         .and_then(serde_json::Value::as_str)
-        .and_then(|id| person_ids.get(id).copied())
+        .map(|id| resolve_person_key(id, &person_ids))
+        .and_then(|id| person_ids.get(&id).copied())
         .or_else(|| {
             registry
                 .and_then(|document| document.data.get("tree"))
                 .and_then(|tree| tree.get("main_person"))
                 .and_then(serde_json::Value::as_str)
-                .and_then(|id| person_ids.get(id).copied())
+                .map(|id| resolve_person_key(id, &person_ids))
+                .and_then(|id| person_ids.get(&id).copied())
         })
         .or_else(|| tree.people.first().map(|person| person.id))
     {
@@ -490,11 +509,11 @@ fn markdown_surname(record: &LocalMarkdownRecord) -> Option<String> {
 }
 
 fn is_timeline_event_record(record: &LocalMarkdownRecord) -> bool {
-    record.path.starts_with("events/") || record.attributes.contains_key("participants")
+    record.kind == "event"
 }
 
-fn event_kind_from_local_kind(kind: &str) -> GenealogyEventKind {
-    match kind {
+fn event_type_from_local_type(event_type: &str) -> GenealogyEventKind {
+    match event_type {
         "birth" => GenealogyEventKind::Birth,
         "death" => GenealogyEventKind::Death,
         "marriage" => GenealogyEventKind::Marriage,
@@ -518,14 +537,14 @@ fn event_participants(
             .collect());
     };
 
-    let Some(items) = value.as_array() else {
+    if !value.is_array() {
         return Err(LocalAuthoringError::Validation {
             message: format!("{} `participants` must be an array", record.path),
         });
-    };
+    }
 
     let mut participants = Vec::new();
-    for item in items {
+    for item in normalized_event_participants(record) {
         let entity_id = item
             .get("entity")
             .and_then(serde_json::Value::as_str)
@@ -548,6 +567,14 @@ fn event_participants(
     }
 
     Ok(participants)
+}
+
+fn resolve_person_key(value: &str, person_ids: &BTreeMap<String, PersonId>) -> String {
+    if person_ids.contains_key(value) {
+        value.to_string()
+    } else {
+        resolve_contextual_id(value, normalize_person_id)
+    }
 }
 
 fn required_json_string<'a>(

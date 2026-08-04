@@ -1,0 +1,8 @@
+schema_version = 1
+id = "relationship:casey-alex-parent-child"
+kind = "relationship"
+title = "Casey is an example parent of Alex"
+relationship = "biological-parent-child"
+source = "casey-example-parent"
+target = "alex-example"
+sources = []

@@ -5,7 +5,7 @@ kind = "identity"
 target = "person:alex-example#name"
 value = "Alex Example"
 confidence = "high"
-sources = ["source:example-notebook"]
+sources = ["example-notebook"]
 +++
 
 # Alex Example name assertion

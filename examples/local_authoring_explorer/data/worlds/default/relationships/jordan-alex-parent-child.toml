@@ -1,0 +1,8 @@
+schema_version = 1
+id = "relationship:jordan-alex-parent-child"
+kind = "relationship"
+title = "Jordan is an example parent of Alex"
+relationship = "biological-parent-child"
+source = "jordan-example-parent"
+target = "alex-example"
+sources = []

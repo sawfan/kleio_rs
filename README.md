@@ -59,16 +59,16 @@ workspace root for scratch/local development.
 Create or compile a workspace with:
 
 ```bash
-cargo run -p kleio-cli_rs --bin kleio-cli -- init-workspace
-cargo run -p kleio-cli_rs --bin kleio-cli -- compile
-cargo run -p kleio-cli_rs --bin kleio-cli -- compile-ecs
-cargo run -p kleio-cli_rs --bin kleio-cli -- compile-tree --view main-family-tree
+cargo run -p kleio-cli --bin kleio-cli -- init-workspace
+cargo run -p kleio-cli --bin kleio-cli -- compile
+cargo run -p kleio-cli --bin kleio-cli -- compile-ecs
+cargo run -p kleio-cli --bin kleio-cli -- compile-tree --view main-family-tree
 ```
 
 For repo-local scratch testing:
 
 ```bash
-cargo run -p kleio-cli_rs --bin kleio-cli -- init-workspace crates/kleio-cli/.kleio-data
+cargo run -p kleio-cli --bin kleio-cli -- init-workspace crates/kleio-cli/.kleio-data
 ```
 
 See `docs/kleio-data-authoring.md` in the workspace root for the current file

@@ -135,7 +135,7 @@ kind = "{}"
 title = "{}"
 {}
 [filter]
-event_kinds = ["birth", "residence", "marriage", "death"]
+event_types = ["birth", "residence", "marriage", "death"]
 include_related_people = true
 include_context_events = false
 
@@ -188,21 +188,21 @@ show_sources = false
 fn map_view_toml(options: &LocalViewOptions) -> String {
     generic_view_toml(
         options,
-        "[filter]\nplace_kinds = []\nevent_kinds = []\n\n[display]\nshow_labels = true\nshow_event_markers = true\n",
+        "[filter]\nplace_kinds = []\nevent_types = []\n\n[display]\nshow_labels = true\nshow_event_markers = true\n",
     )
 }
 
 fn calendar_view_toml(options: &LocalViewOptions) -> String {
     generic_view_toml(
         options,
-        "[filter]\nevent_kinds = []\n\n[display]\ngroup_by = \"month\"\nshow_sources = true\n",
+        "[filter]\nevent_types = []\n\n[display]\ngroup_by = \"month\"\nshow_sources = true\n",
     )
 }
 
 fn visualization_view_toml(options: &LocalViewOptions) -> String {
     generic_view_toml(
         options,
-        "[filter]\nevent_kinds = []\nentity_kinds = []\n\n[display]\nrenderer = \"default\"\nshow_metadata = true\n",
+        "[filter]\nevent_types = []\nentity_kinds = []\n\n[display]\nrenderer = \"default\"\nshow_metadata = true\n",
     )
 }
 

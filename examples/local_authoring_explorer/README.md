@@ -31,7 +31,7 @@ That writes generated files under `data/worlds/default/build/`, which Trunk copi
 If you want to compile the authored files without starting Trunk:
 
 ```sh
-cargo run -p kleio-cli_rs --bin kleio-cli -- build crates/kleio/examples/local_authoring_explorer/data --timeline-view example-life --tree-view main-family-tree
+cargo run -p kleio-cli --bin kleio-cli -- build crates/kleio/examples/local_authoring_explorer/data --timeline-view example-life --tree-view main-family-tree
 ```
 
 ## Notes

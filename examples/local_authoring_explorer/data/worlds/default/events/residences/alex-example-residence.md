@@ -1,12 +1,13 @@
 +++
 schema_version = 1
 id = "event:alex-example-residence"
-kind = "residence"
+kind = "event"
+type = "residence"
 title = "Alex Example resides in Example Town"
 date = 1920-06-15
-participants = [{ entity = "person:alex-example", role = "resident" }]
-places = [{ entity = "place:example-town", role = "residence" }]
-sources = ["source:example-notebook"]
+participants = ["alex-example"]
+places = ["example-town"]
+sources = ["example-notebook"]
 +++
 
 # Alex Example residence

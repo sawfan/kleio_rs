@@ -24,7 +24,7 @@ impl LocalEntityKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalEntityOptions {
     pub slug: String,
     pub title: String,
@@ -38,11 +38,19 @@ impl LocalEntityOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalEventOptions {
     pub event_slug: String,
-    pub event_kind: String,
-    pub title: String,
+    pub event_type: String,
+    pub title: Option<String>,
+    pub participants: Vec<String>,
+    pub places: Vec<String>,
+    pub location: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub time: Option<String>,
+    pub date_precision: Option<String>,
+    pub sources: Vec<String>,
     pub force: bool,
 }
 
@@ -89,6 +97,7 @@ pub struct LocalAssertionOptions {
     pub assertion_kind: String,
     pub target: String,
     pub value: Option<String>,
+    pub sources: Vec<String>,
     pub force: bool,
 }
 
@@ -123,10 +132,24 @@ pub fn create_local_event(
     options: &LocalEventOptions,
 ) -> Result<PathBuf, LocalAuthoringError> {
     validate_slug(&options.event_slug, "event slug")?;
-    validate_slug(&options.event_kind, "event kind")?;
+    validate_slug(&options.event_type, "event type")?;
+    for participant in &options.participants {
+        validate_contextual_record_id(participant, "event participant")?;
+    }
+    for place in &options.places {
+        validate_contextual_record_id(place, "event place")?;
+    }
+    for source in &options.sources {
+        validate_contextual_record_id(source, "event source")?;
+    }
+    if options.latitude.is_some() != options.longitude.is_some() {
+        return Err(LocalAuthoringError::Validation {
+            message: "event latitude and longitude must be provided together".to_string(),
+        });
+    }
     let world_root = world_root.as_ref();
     let paths = WorldPaths::new(world_root);
-    let dir = paths.event_kind_dir(event_kind_dir_name(&options.event_kind));
+    let dir = paths.event_type_dir(event_type_dir_name(&options.event_type));
     create_dir(world_root, &dir)?;
     let path = dir.join(format!("{}.md", options.event_slug));
     write_new_file(world_root, &path, &event_markdown(options), options.force)?;
@@ -139,10 +162,10 @@ pub fn create_local_relationship(
 ) -> Result<PathBuf, LocalAuthoringError> {
     validate_slug(&options.relationship_slug, "relationship slug")?;
     validate_slug(&options.relationship_kind, "relationship kind")?;
-    validate_record_id(&options.source, "relationship source")?;
-    validate_record_id(&options.target, "relationship target")?;
+    validate_contextual_record_id(&options.source, "relationship source")?;
+    validate_contextual_record_id(&options.target, "relationship target")?;
     for source_id in &options.sources {
-        validate_record_id(source_id, "relationship source reference")?;
+        validate_contextual_record_id(source_id, "relationship source reference")?;
     }
 
     let world_root = world_root.as_ref();
@@ -183,6 +206,9 @@ pub fn create_local_assertion(
     validate_slug(&options.assertion_slug, "assertion slug")?;
     validate_slug(&options.assertion_kind, "assertion kind")?;
     validate_record_id(target_base_id(&options.target), "assertion target")?;
+    for source in &options.sources {
+        validate_contextual_record_id(source, "assertion source")?;
+    }
 
     let world_root = world_root.as_ref();
     let paths = WorldPaths::new(world_root);
@@ -221,15 +247,43 @@ Add notes about this {} here.
 }
 
 fn event_markdown(options: &LocalEventOptions) -> String {
+    let participants = toml_multiline_string_array(&options.participants);
+    let places = toml_multiline_string_array(&options.places);
+    let time = options
+        .time
+        .as_deref()
+        .map(|time| format!("time = \"{}\"\n", escape_toml_basic(time)))
+        .unwrap_or_default();
+    let date_precision = options
+        .date_precision
+        .as_deref()
+        .map(|precision| format!("date_precision = \"{}\"\n", escape_toml_basic(precision)))
+        .unwrap_or_else(|| {
+            options
+                .time
+                .as_deref()
+                .map(infer_date_precision)
+                .map(|precision| format!("date_precision = \"{precision}\"\n"))
+                .unwrap_or_default()
+        });
+    let sources = toml_multiline_string_array(&options.sources);
+    let inline_location = inline_location_toml(options);
+    let title_line = options
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .map(|title| format!("title = \"{}\"\n", escape_toml_basic(title)))
+        .unwrap_or_default();
     format!(
         r#"+++
 schema_version = 1
 id = "{}"
-kind = "{}"
-title = "{}"
-participants = []
-places = []
+kind = "event"
+type = "{}"
+{}{}{}{}participants = {participants}
+places = {places}
 assertions = []
+sources = {sources}
 +++
 
 # {}
@@ -237,9 +291,12 @@ assertions = []
 Add event notes here. Connect entities through `participants`, places through `places`, and source-backed claims through `assertions`.
 "#,
         escape_toml_basic(&options.id()),
-        escape_toml_basic(&options.event_kind),
-        escape_toml_basic(&options.title),
-        options.title
+        escape_toml_basic(&options.event_type),
+        title_line,
+        time,
+        date_precision,
+        inline_location,
+        options.title.as_deref().unwrap_or(&options.event_type)
     )
 }
 
@@ -282,13 +339,14 @@ Optional citation, transcription, provenance, or notes.
 }
 
 fn assertion_markdown(options: &LocalAssertionOptions) -> String {
+    let sources = toml_multiline_string_array(&options.sources);
     format!(
         r#"+++
 schema_version = 1
 id = "{}"
 kind = "{}"
 target = "{}"
-{}sources = []
+{}sources = {sources}
 confidence = "medium"
 +++
 
@@ -301,7 +359,7 @@ Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
             .value
             .as_deref()
             .map(|value| format!("value = \"{}\"\n", escape_toml_basic(value)))
-            .unwrap_or_default()
+            .unwrap_or_default(),
     )
 }
 
@@ -312,13 +370,22 @@ fn target_base_id(target: &str) -> &str {
         .unwrap_or(target)
 }
 
-fn event_kind_dir_name(event_kind: &str) -> &str {
-    match event_kind {
+fn event_type_dir_name(event_type: &str) -> &str {
+    match event_type {
         "birth" => "births",
         "death" => "deaths",
         "residence" => "residences",
         "marriage" => "marriages",
+        "divorce" => "divorces",
+        "adoption" => "adoptions",
+        "education" => "education",
+        "military-service" => "military-service",
+        "immigration" => "migrations",
+        "emigration" => "migrations",
         "migration" => "migrations",
+        "naturalization" => "naturalizations",
+        "census" => "census",
+        "name-change" => "name-changes",
         "observation" => "observations",
         "moment" => "moments",
         _ => "other",
@@ -387,6 +454,60 @@ fn validate_record_id(value: &str, label: &str) -> Result<(), LocalAuthoringErro
     Ok(())
 }
 
+fn inline_location_toml(options: &LocalEventOptions) -> String {
+    match (
+        options.location.as_deref(),
+        options.latitude,
+        options.longitude,
+    ) {
+        (Some(label), Some(latitude), Some(longitude)) => format!(
+            "[location]\nlabel = \"{}\"\nlatitude = {}\nlongitude = {}\n",
+            escape_toml_basic(label),
+            latitude,
+            longitude
+        ),
+        (Some(label), None, None) => format!("location = \"{}\"\n", escape_toml_basic(label)),
+        (None, Some(latitude), Some(longitude)) => {
+            format!(
+                "[location]\nlatitude = {}\nlongitude = {}\n",
+                latitude, longitude
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+fn infer_date_precision(value: &str) -> &'static str {
+    if value.contains(':') {
+        "minute"
+    } else if value.matches('-').count() >= 2 {
+        "day"
+    } else if value.matches('-').count() == 1 {
+        "month"
+    } else if !value.trim().is_empty() {
+        "year"
+    } else {
+        "unknown"
+    }
+}
+
+fn validate_contextual_record_id(value: &str, label: &str) -> Result<(), LocalAuthoringError> {
+    validate_slug(value, label).or_else(|_| validate_record_id(value, label))
+}
+
+fn toml_multiline_string_array(values: &[String]) -> String {
+    if values.is_empty() {
+        return "[]".to_string();
+    }
+
+    let mut text = String::from("[\n");
+    for value in values {
+        text.push_str(&format!("  \"{}\",\n", escape_toml_basic(value)));
+    }
+    text.push(']');
+    text
+}
+
 fn toml_string_array(values: &[String]) -> String {
     let values = values
         .iter()
@@ -434,12 +555,62 @@ mod tests {
             &world_root,
             &LocalEventOptions {
                 event_slug: "example-observation".to_string(),
-                event_kind: "observation".to_string(),
-                title: "Example Observation".to_string(),
+                event_type: "observation".to_string(),
+                title: Some("Example Observation".to_string()),
+                participants: Vec::new(),
+                places: Vec::new(),
+                location: None,
+                latitude: None,
+                longitude: None,
+                time: None,
+                date_precision: None,
+                sources: Vec::new(),
                 force: false,
             },
         )
         .expect("event");
+        let event_text = fs::read_to_string(&event).expect("event text");
+        assert!(event_text.contains("kind = \"event\""));
+        assert!(event_text.contains("type = \"observation\""));
+        assert!(event_text.contains("title = \"Example Observation\""));
+        assert!(event_text.contains("participants = []"));
+        assert!(event_text.contains("places = []"));
+
+        let event_with_details = create_local_event(
+            &world_root,
+            &LocalEventOptions {
+                event_slug: "birth-example-person".to_string(),
+                event_type: "birth".to_string(),
+                title: None,
+                participants: vec!["example-person".to_string()],
+                places: vec!["example-place".to_string()],
+                location: Some("Example Town".to_string()),
+                latitude: Some(12.345),
+                longitude: Some(-67.89),
+                time: Some("1900-01-01 07:18".to_string()),
+                date_precision: None,
+                sources: vec!["example-source".to_string()],
+                force: false,
+            },
+        )
+        .expect("detailed event");
+        let event_with_details_text =
+            fs::read_to_string(&event_with_details).expect("detailed event text");
+        assert!(event_with_details_text.contains("type = \"birth\""));
+        assert!(event_with_details_text.contains("time = \"1900-01-01 07:18\""));
+        assert!(event_with_details_text.contains("date_precision = \"minute\""));
+        assert!(event_with_details_text.contains("participants = ["));
+        assert!(event_with_details_text.contains("\"example-person\""));
+        assert!(event_with_details_text.contains("places = ["));
+        assert!(event_with_details_text.contains("\"example-place\""));
+        assert!(event_with_details_text.contains("sources = ["));
+        assert!(event_with_details_text.contains("\"example-source\""));
+        assert!(event_with_details_text.contains("[location]"));
+        assert!(event_with_details_text.contains("label = \"Example Town\""));
+        assert!(event_with_details_text.contains("latitude = 12.345"));
+        assert!(event_with_details_text.contains("longitude = -67.89"));
+        assert!(!event_with_details_text.contains("title ="));
+
         let source = create_local_source(
             &world_root,
             &LocalSourceOptions {
@@ -470,10 +641,15 @@ mod tests {
                 assertion_kind: "identity".to_string(),
                 target: "person:example-person#name".to_string(),
                 value: Some("Example Person".to_string()),
+                sources: vec!["example-source".to_string()],
                 force: false,
             },
         )
         .expect("assertion");
+
+        let assertion_text = fs::read_to_string(&assertion).expect("assertion text");
+        assert!(assertion_text.contains("sources = ["));
+        assert!(assertion_text.contains("\"example-source\""));
 
         let support_assertion = create_local_assertion(
             &world_root,
@@ -482,6 +658,7 @@ mod tests {
                 assertion_kind: "event-support".to_string(),
                 target: "event:example-observation#date".to_string(),
                 value: None,
+                sources: Vec::new(),
                 force: false,
             },
         )

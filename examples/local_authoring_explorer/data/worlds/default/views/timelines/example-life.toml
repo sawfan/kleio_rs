@@ -7,6 +7,6 @@ title = "Example life timeline"
 entity = "person:alex-example"
 
 [filter]
-event_kinds = ["birth", "residence", "marriage", "death"]
+event_types = ["birth", "residence", "marriage", "death"]
 include_related_people = true
 include_context_events = false

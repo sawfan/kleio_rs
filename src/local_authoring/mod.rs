@@ -24,12 +24,17 @@ mod collections;
 mod config;
 mod data_validation;
 mod ecs_compile;
+mod event_profiles;
+mod filename_hints;
 mod imports;
 mod kinship;
+mod locations;
 mod paths;
 mod records;
+mod refs;
 mod schema;
 mod skeleton;
+mod sources;
 mod timeline_compile;
 mod tree_compile;
 mod validation;
@@ -80,6 +85,8 @@ pub use views::{
 };
 
 use data_validation::validate_local_data;
+use filename_hints::event_filename_hints;
+use locations::event_locations;
 use tree_compile::{tree_from_local_data_bundle, tree_from_local_data_bundle_with_view};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -438,6 +445,7 @@ fn read_markdown_record(
     let tags = take_string_array(&mut table, "tags", &full_path)?;
     let related = take_string_array(&mut table, "related", &full_path)?;
     let place = take_optional_string(&mut table, "place", &full_path)?;
+    apply_event_filename_hints(relative_path, &mut table)?;
     let attributes = toml_table_to_json_map(table, &full_path)?;
 
     Ok(LocalMarkdownRecord {
@@ -453,6 +461,113 @@ fn read_markdown_record(
         attributes,
         notes_markdown: notes_markdown.trim().to_string(),
     })
+}
+
+fn apply_event_filename_hints(
+    relative_path: &Path,
+    table: &mut toml::Table,
+) -> Result<(), LocalAuthoringError> {
+    let hints = event_filename_hints(relative_path)?;
+
+    if let Some(event_type) = hints.event_type {
+        table
+            .entry("type".to_string())
+            .or_insert(toml::Value::String(event_type));
+    }
+
+    if let Some(time) = hints.time {
+        table
+            .entry("time".to_string())
+            .or_insert(toml::Value::String(time));
+    }
+
+    if let Some(time_basis) = hints.time_basis {
+        table
+            .entry("time_basis".to_string())
+            .or_insert(toml::Value::String(time_basis));
+    }
+
+    if let Some(participant) = hints.participant {
+        if !table.contains_key("participants") {
+            table.insert(
+                "participants".to_string(),
+                toml::Value::Array(vec![toml::Value::String(participant)]),
+            );
+        } else {
+            replace_self_participants(table, &participant);
+        }
+    }
+
+    if (hints.latitude.is_some() || hints.longitude.is_some()) && !table.contains_key("places") {
+        merge_filename_location_coordinates(table, hints.latitude, hints.longitude);
+    }
+
+    Ok(())
+}
+
+fn replace_self_participants(table: &mut toml::Table, participant: &str) {
+    let Some(toml::Value::Array(participants)) = table.get_mut("participants") else {
+        return;
+    };
+
+    for value in participants {
+        match value {
+            toml::Value::String(entity) if entity == "self" => {
+                *entity = participant.to_string();
+            }
+            toml::Value::Table(participant_table) => {
+                if participant_table
+                    .get("entity")
+                    .and_then(toml::Value::as_str)
+                    == Some("self")
+                {
+                    participant_table.insert(
+                        "entity".to_string(),
+                        toml::Value::String(participant.to_string()),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn merge_filename_location_coordinates(
+    table: &mut toml::Table,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+) {
+    let (Some(latitude), Some(longitude)) = (latitude, longitude) else {
+        return;
+    };
+
+    match table.remove("location") {
+        Some(toml::Value::Table(mut location)) => {
+            location
+                .entry("latitude".to_string())
+                .or_insert(toml::Value::Float(latitude));
+            location
+                .entry("longitude".to_string())
+                .or_insert(toml::Value::Float(longitude));
+            table.insert("location".to_string(), toml::Value::Table(location));
+        }
+        Some(toml::Value::String(label)) => {
+            let mut location = toml::Table::new();
+            location.insert("label".to_string(), toml::Value::String(label));
+            location.insert("latitude".to_string(), toml::Value::Float(latitude));
+            location.insert("longitude".to_string(), toml::Value::Float(longitude));
+            table.insert("location".to_string(), toml::Value::Table(location));
+        }
+        Some(value) => {
+            table.insert("location".to_string(), value);
+        }
+        None => {
+            let mut location = toml::Table::new();
+            location.insert("latitude".to_string(), toml::Value::Float(latitude));
+            location.insert("longitude".to_string(), toml::Value::Float(longitude));
+            table.insert("location".to_string(), toml::Value::Table(location));
+        }
+    }
 }
 
 fn read_toml_document(
