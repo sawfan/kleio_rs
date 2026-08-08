@@ -53,6 +53,7 @@ enum LabelTemplate {
     SubjectWas(&'static str),
     SubjectDid(&'static str),
     Marriage,
+    Divorce,
     None,
 }
 
@@ -65,6 +66,11 @@ impl LabelTemplate {
             Self::Marriage => match participant_names {
                 [first, second, ..] => Some(format!("{first} and {second} married")),
                 [name] => Some(format!("{name} married")),
+                [] => None,
+            },
+            Self::Divorce => match participant_names {
+                [first, second, ..] => Some(format!("{first} and {second} divorced")),
+                [name] => Some(format!("{name} divorced")),
                 [] => None,
             },
             Self::None => None,
@@ -167,7 +173,7 @@ impl<'a> LocalEventType<'a> {
                 "divorce",
                 Some("partner"),
                 Some("divorce-place"),
-                LabelTemplate::SubjectDid("divorced")
+                LabelTemplate::Divorce
             ),
             Self::Adoption => profile!(
                 "adoption",
@@ -275,17 +281,44 @@ pub(super) fn event_participant_names(
 
 pub(super) fn event_participant_refs(record: &LocalMarkdownRecord) -> Vec<LocalParticipantRef> {
     let default_role = local_event_type(record).and_then(LocalEventType::default_participant_role);
-    record
+    let mut participants = Vec::new();
+
+    if let Some(subject) = record
+        .attributes
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+        .filter(|subject| !subject.trim().is_empty())
+    {
+        participants.push(LocalParticipantRef {
+            entity: normalize_participant_entity_id(subject),
+            role: default_role.or(Some("subject")).map(ToOwned::to_owned),
+        });
+    }
+
+    if let Some(mut explicit_participants) = record
         .attributes
         .get("participants")
         .and_then(serde_json::Value::as_array)
         .map(|participants| {
             participants
                 .iter()
-                .filter_map(|participant| normalize_participant_ref(participant, default_role))
-                .collect()
+                .filter_map(|participant| {
+                    normalize_participant_ref(record, participant, default_role)
+                })
+                .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
+    {
+        for participant in explicit_participants.drain(..) {
+            if !participants
+                .iter()
+                .any(|existing| existing.entity == participant.entity)
+            {
+                participants.push(participant);
+            }
+        }
+    }
+
+    participants
 }
 
 pub(super) fn event_participants(record: &LocalMarkdownRecord) -> Vec<serde_json::Value> {
@@ -306,11 +339,47 @@ pub(super) fn normalize_participant_entity_id(entity: &str) -> String {
     normalize_person_id(entity)
 }
 
+fn infer_self_participant_entity(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .attributes
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+        .filter(|subject| *subject != "self" && !subject.trim().is_empty())
+        .map(normalize_participant_entity_id)
+        .or_else(|| {
+            (record.kind == "event")
+                .then(|| record.id.strip_prefix("event:birth-"))
+                .flatten()
+                .filter(|slug| !slug.trim().is_empty())
+                .map(normalize_participant_entity_id)
+        })
+        .or_else(|| {
+            record
+                .path
+                .split('/')
+                .next_back()
+                .and_then(|filename| filename.strip_suffix(".md"))
+                .and_then(|stem| {
+                    stem.split("--").find_map(|part| {
+                        part.strip_prefix("person=")
+                            .or_else(|| part.strip_prefix("participant="))
+                    })
+                })
+                .filter(|slug| !slug.trim().is_empty())
+                .map(normalize_participant_entity_id)
+        })
+}
+
 fn normalize_participant_ref(
+    record: &LocalMarkdownRecord,
     value: &serde_json::Value,
     default_role: Option<&str>,
 ) -> Option<LocalParticipantRef> {
     match value {
+        serde_json::Value::String(entity) if entity == "self" => Some(LocalParticipantRef {
+            entity: infer_self_participant_entity(record)?,
+            role: default_role.map(ToOwned::to_owned),
+        }),
         serde_json::Value::String(entity) if !entity.trim().is_empty() => {
             Some(LocalParticipantRef {
                 entity: normalize_participant_entity_id(entity),
@@ -321,7 +390,13 @@ fn normalize_participant_ref(
             let entity = values
                 .get("entity")
                 .and_then(serde_json::Value::as_str)
-                .map(normalize_participant_entity_id)?;
+                .and_then(|entity| {
+                    if entity == "self" {
+                        infer_self_participant_entity(record)
+                    } else {
+                        Some(normalize_participant_entity_id(entity))
+                    }
+                })?;
             let role = values
                 .get("role")
                 .and_then(serde_json::Value::as_str)

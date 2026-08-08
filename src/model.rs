@@ -369,8 +369,21 @@ fn format_year(year: i32) -> String {
     serde::Deserialize,
 )]
 pub struct Name {
+    /// How this name is used, such as `preferred`, `legal`, `birth`, or
+    /// `alternate`.
+    #[serde(default)]
+    pub usage: Option<String>,
+
+    /// Name as it should be displayed in ordinary UI.
     pub display: String,
+
+    /// Complete source form when it differs from the display form.
+    #[serde(default)]
+    pub full: Option<String>,
+
     pub given: Option<String>,
+    #[serde(default)]
+    pub middle: Option<String>,
     pub surname: Option<String>,
 
     /// Alternate spellings, maiden names, etc.

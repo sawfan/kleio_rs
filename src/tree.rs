@@ -12,6 +12,62 @@ use crate::{EventId, GenealogyEvent, Name, Person, PersonId, Provenance, Sex};
 #[derive(
     Debug,
     Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum ParentRole {
+    Father,
+    Mother,
+    Parent,
+    Unknown,
+}
+
+impl ParentRole {
+    pub fn as_value(&self) -> &'static str {
+        match self {
+            Self::Father => "father",
+            Self::Mother => "mother",
+            Self::Parent => "parent",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_value(value: &str) -> Option<Self> {
+        match value.trim() {
+            "father" => Some(Self::Father),
+            "mother" => Some(Self::Mother),
+            "parent" => Some(Self::Parent),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    pub fn from_sex(sex: &Sex) -> Option<Self> {
+        match sex {
+            Sex::Male => Some(Self::Father),
+            Sex::Female => Some(Self::Mother),
+            Sex::Other | Sex::Unknown => None,
+        }
+    }
+}
+
+fn parent_role_noun(role: ParentRole) -> &'static str {
+    match role {
+        ParentRole::Father => "father",
+        ParentRole::Mother => "mother",
+        ParentRole::Parent | ParentRole::Unknown => "parent",
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
     PartialEq,
     Eq,
     PartialOrd,
@@ -148,6 +204,26 @@ impl RelationshipKind {
         }
     }
 
+    pub fn label_with_parent_role(&self, parent_role: Option<ParentRole>) -> String {
+        let role = parent_role.unwrap_or(ParentRole::Parent);
+        match self {
+            Self::BiologicalParentChild => format!("biological {}", parent_role_noun(role)),
+            Self::AdoptiveParentChild => format!("adoptive {}", parent_role_noun(role)),
+            Self::FosterParentChild => format!("foster {}", parent_role_noun(role)),
+            Self::StepParentChild => match role {
+                ParentRole::Father => "stepfather".to_string(),
+                ParentRole::Mother => "stepmother".to_string(),
+                ParentRole::Parent | ParentRole::Unknown => "step-parent".to_string(),
+            },
+            Self::GuardianChild => match role {
+                ParentRole::Father => "male guardian".to_string(),
+                ParentRole::Mother => "female guardian".to_string(),
+                ParentRole::Parent | ParentRole::Unknown => "guardian".to_string(),
+            },
+            _ => self.label().to_string(),
+        }
+    }
+
     pub fn as_value(&self) -> &str {
         match self {
             Self::BiologicalParentChild => "biological-parent-child",
@@ -232,6 +308,7 @@ pub struct TreeRelationship {
     pub target: PersonId,
 
     pub label: Option<String>,
+    pub parent_role: Option<ParentRole>,
     pub events: Vec<EventId>,
     pub categories: Vec<CategoryId>,
     pub provenance: Provenance,
@@ -418,8 +495,11 @@ impl TreeDocument {
         self.people.push(Person {
             id,
             names: vec![Name {
+                usage: Some("preferred".to_string()),
                 display: display_name,
+                full: None,
                 given: None,
+                middle: None,
                 surname: None,
                 aliases: Vec::new(),
                 provenance: Provenance::default(),
@@ -449,6 +529,7 @@ impl TreeDocument {
             source,
             target,
             label: None,
+            parent_role: None,
             events: Vec::new(),
             categories: Vec::new(),
             provenance: Provenance::default(),
@@ -473,8 +554,11 @@ impl TreeDocument {
             name.display = display_name;
         } else {
             person.names.push(Name {
+                usage: Some("preferred".to_string()),
                 display: display_name,
+                full: None,
                 given: None,
+                middle: None,
                 surname: None,
                 aliases: Vec::new(),
                 provenance: Provenance::default(),

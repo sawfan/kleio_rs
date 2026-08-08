@@ -43,6 +43,7 @@ pub struct LocalEventOptions {
     pub event_slug: String,
     pub event_type: String,
     pub title: Option<String>,
+    pub subject: Option<String>,
     pub participants: Vec<String>,
     pub places: Vec<String>,
     pub location: Option<String>,
@@ -63,8 +64,9 @@ impl LocalEventOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalRelationshipOptions {
     pub relationship_slug: String,
-    pub title: String,
+    pub title: Option<String>,
     pub relationship_kind: String,
+    pub parent_role: Option<String>,
     pub source: String,
     pub target: String,
     pub sources: Vec<String>,
@@ -98,6 +100,8 @@ pub struct LocalAssertionOptions {
     pub target: String,
     pub value: Option<String>,
     pub sources: Vec<String>,
+    pub confidence: Option<String>,
+    pub note: Option<String>,
     pub force: bool,
 }
 
@@ -162,6 +166,9 @@ pub fn create_local_relationship(
 ) -> Result<PathBuf, LocalAuthoringError> {
     validate_slug(&options.relationship_slug, "relationship slug")?;
     validate_slug(&options.relationship_kind, "relationship kind")?;
+    if let Some(parent_role) = &options.parent_role {
+        validate_slug(parent_role, "relationship parent role")?;
+    }
     validate_contextual_record_id(&options.source, "relationship source")?;
     validate_contextual_record_id(&options.target, "relationship target")?;
     for source_id in &options.sources {
@@ -231,23 +238,107 @@ fn entity_markdown(options: &LocalEntityOptions) -> String {
 schema_version = 1
 id = "{}"
 kind = "{}"
-primary_name = "{}"
+title = "{}"
 +++
 
 # {}
 
-Add notes about this {} here.
-"#,
+{}"#,
         escape_toml_basic(&options.id()),
         options.kind.as_str(),
         escape_toml_basic(&options.title),
         options.title,
-        options.kind.as_str()
+        entity_body(options.kind)
     )
 }
 
+fn entity_body(kind: LocalEntityKind) -> &'static str {
+    match kind {
+        LocalEntityKind::Person => {
+            "## Notes
+
+Write biographical notes, memories, research notes, or unresolved questions here.
+Keep dated life facts in `events/` so timeline and tree views can project them.
+
+## Known details
+
+- Preferred name:
+- Other names:
+- Important places:
+- Open questions:
+"
+        }
+        LocalEntityKind::Place => {
+            "## Notes
+
+Describe this place, including memories, research notes, alternate names, or
+uncertainty about its identity.
+
+## Known details
+
+- Alternate names:
+- Larger area or jurisdiction:
+- Coordinates or map reference:
+- Open questions:
+"
+        }
+        LocalEntityKind::Organization => {
+            "## Notes
+
+Describe this organization, its role, relevant dates, and open research questions.
+
+## Known details
+
+- Alternate names:
+- Important people:
+- Important places:
+- Open questions:
+"
+        }
+        LocalEntityKind::Object => {
+            "## Notes
+
+Describe this object, why it matters, where it came from, and where it is now.
+
+## Known details
+
+- Owner or custodian:
+- Date or era:
+- Related people or places:
+- Open questions:
+"
+        }
+        LocalEntityKind::Concept => {
+            "## Notes
+
+Describe this concept or topic and how it connects to people, events, places, or
+sources in this world.
+
+## Known details
+
+- Related people:
+- Related events:
+- Related sources:
+- Open questions:
+"
+        }
+    }
+}
+
 fn event_markdown(options: &LocalEventOptions) -> String {
-    let participants = toml_multiline_string_array(&options.participants);
+    let subject = options
+        .subject
+        .as_deref()
+        .map(|subject| format!("subject = \"{}\"\n", escape_toml_basic(subject)))
+        .unwrap_or_default();
+    let participants = if options.participants.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "participants = {}\n",
+            toml_multiline_string_array(&options.participants)
+        )
+    };
     let places = toml_multiline_string_array(&options.places);
     let time = options
         .time
@@ -280,40 +371,52 @@ schema_version = 1
 id = "{}"
 kind = "event"
 type = "{}"
-{}{}{}{}participants = {participants}
-places = {places}
+{}{}{}{}{participants}places = {places}
 assertions = []
 sources = {sources}
-+++
+{}+++
 
 # {}
 
-Add event notes here. Connect entities through `participants`, places through `places`, and source-backed claims through `assertions`.
+## Notes
+
+Describe what happened, what is known, and what is uncertain.
+
+## Evidence
+
+List source notes, transcriptions, or follow-up tasks here. Use `sources` and
+`assertions` in the frontmatter for structured evidence links.
 "#,
         escape_toml_basic(&options.id()),
         escape_toml_basic(&options.event_type),
         title_line,
         time,
         date_precision,
+        subject,
         inline_location,
         options.title.as_deref().unwrap_or(&options.event_type)
     )
 }
 
 fn relationship_toml(options: &LocalRelationshipOptions) -> String {
+    let title = options
+        .title
+        .as_deref()
+        .map(|title| format!("title = \"{}\"\n", escape_toml_basic(title)))
+        .unwrap_or_default();
+    let parent_role = options
+        .parent_role
+        .as_deref()
+        .map(|parent_role| format!("parent_role = \"{}\"\n", escape_toml_basic(parent_role)))
+        .unwrap_or_default();
     let sources = toml_string_array(&options.sources);
     format!(
         r#"schema_version = 1
-id = "{}"
-kind = "relationship"
-title = "{}"
 relationship = "{}"
-source = "{}"
+{parent_role}source = "{}"
 target = "{}"
 sources = {sources}
-"#,
-        escape_toml_basic(&options.id()),
-        escape_toml_basic(&options.title),
+{title}"#,
         escape_toml_basic(&options.relationship_kind),
         escape_toml_basic(&options.source),
         escape_toml_basic(&options.target),
@@ -330,16 +433,35 @@ title = "{}"
 media = []
 +++
 
-Optional citation, transcription, provenance, or notes.
+# {}
+
+## Citation
+
+Add a concise citation or source description here.
+
+## Notes
+
+Record provenance, access notes, or context for this source.
+
+## Transcript
+
+Add transcribed text or image/PDF notes when useful.
 "#,
         escape_toml_basic(&options.id()),
         escape_toml_basic(&options.source_kind),
-        escape_toml_basic(&options.title)
+        escape_toml_basic(&options.title),
+        options.title
     )
 }
 
 fn assertion_markdown(options: &LocalAssertionOptions) -> String {
     let sources = toml_multiline_string_array(&options.sources);
+    let confidence = options.confidence.as_deref().unwrap_or("medium");
+    let note = options
+        .note
+        .as_deref()
+        .map(|note| format!("note = \"{}\"\n", escape_toml_basic(note)))
+        .unwrap_or_default();
     format!(
         r#"+++
 schema_version = 1
@@ -347,10 +469,16 @@ id = "{}"
 kind = "{}"
 target = "{}"
 {}sources = {sources}
-confidence = "medium"
-+++
+confidence = "{}"
+{}+++
 
-Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
+## Reasoning
+
+Explain why this claim is supported, uncertain, or in conflict.
+
+## Source notes
+
+Add transcription notes, quotations, or follow-up tasks here.
 "#,
         escape_toml_basic(&options.id()),
         escape_toml_basic(&options.assertion_kind),
@@ -360,6 +488,8 @@ Optional reasoning, transcription notes, uncertainty notes, or conflict notes.
             .as_deref()
             .map(|value| format!("value = \"{}\"\n", escape_toml_basic(value)))
             .unwrap_or_default(),
+        escape_toml_basic(confidence),
+        note,
     )
 }
 
@@ -557,6 +687,7 @@ mod tests {
                 event_slug: "example-observation".to_string(),
                 event_type: "observation".to_string(),
                 title: Some("Example Observation".to_string()),
+                subject: None,
                 participants: Vec::new(),
                 places: Vec::new(),
                 location: None,
@@ -573,7 +704,7 @@ mod tests {
         assert!(event_text.contains("kind = \"event\""));
         assert!(event_text.contains("type = \"observation\""));
         assert!(event_text.contains("title = \"Example Observation\""));
-        assert!(event_text.contains("participants = []"));
+        assert!(!event_text.contains("participants ="));
         assert!(event_text.contains("places = []"));
 
         let event_with_details = create_local_event(
@@ -582,6 +713,7 @@ mod tests {
                 event_slug: "birth-example-person".to_string(),
                 event_type: "birth".to_string(),
                 title: None,
+                subject: None,
                 participants: vec!["example-person".to_string()],
                 places: vec!["example-place".to_string()],
                 location: Some("Example Town".to_string()),
@@ -625,8 +757,9 @@ mod tests {
             &world_root,
             &LocalRelationshipOptions {
                 relationship_slug: "example-association".to_string(),
-                title: "Example association".to_string(),
+                title: Some("Example association".to_string()),
                 relationship_kind: "associate".to_string(),
+                parent_role: None,
                 source: "person:example-person".to_string(),
                 target: "person:example-person".to_string(),
                 sources: vec!["source:example-source".to_string()],
@@ -642,10 +775,17 @@ mod tests {
                 target: "person:example-person#name".to_string(),
                 value: Some("Example Person".to_string()),
                 sources: vec!["example-source".to_string()],
+                confidence: None,
+                note: None,
                 force: false,
             },
         )
         .expect("assertion");
+
+        let relationship_text = fs::read_to_string(&relationship).expect("relationship text");
+        assert!(!relationship_text.contains("id ="));
+        assert!(!relationship_text.contains("kind = \"relationship\""));
+        assert!(relationship_text.contains("title = \"Example association\""));
 
         let assertion_text = fs::read_to_string(&assertion).expect("assertion text");
         assert!(assertion_text.contains("sources = ["));
@@ -659,12 +799,16 @@ mod tests {
                 target: "event:example-observation#date".to_string(),
                 value: None,
                 sources: Vec::new(),
+                confidence: Some("low".to_string()),
+                note: Some("Example source note.".to_string()),
                 force: false,
             },
         )
         .expect("support assertion");
         let support_text = fs::read_to_string(&support_assertion).expect("support assertion text");
         assert!(!support_text.contains("value ="));
+        assert!(support_text.contains("confidence = \"low\""));
+        assert!(support_text.contains("note = \"Example source note.\""));
 
         assert_eq!(
             relationship.strip_prefix(&world_root).unwrap(),

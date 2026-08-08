@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::RelationshipKind;
 
-use super::{LocalDataBundle, LocalTomlDocument};
+use super::{
+    LocalDataBundle, LocalMarkdownRecord, LocalTomlDocument,
+    event_profiles::event_participant_entity_ids,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LocalDerivedKinshipRelationship {
@@ -11,6 +14,10 @@ pub struct LocalDerivedKinshipRelationship {
     pub target: String,
     pub depth: u32,
     pub inferred_from: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,14 +36,17 @@ pub fn infer_local_kinship_relationships(
         .iter()
         .filter_map(direct_relationship_from_document)
         .collect::<Vec<_>>();
-    infer_kinship_from_direct_relationships(&direct)
+    let couple_periods = couple_periods_from_events(&bundle.markdown_records);
+    infer_kinship_from_direct_relationships(&direct, &couple_periods)
 }
 
 fn infer_kinship_from_direct_relationships(
     direct: &[DirectRelationship],
+    couple_periods: &BTreeMap<(String, String), CouplePeriod>,
 ) -> Vec<LocalDerivedKinshipRelationship> {
     let mut parent_to_children = BTreeMap::<String, Vec<ParentChildEdge>>::new();
     let mut child_to_parents = BTreeMap::<String, Vec<ParentChildEdge>>::new();
+    let mut spouse_edges = Vec::<SpouseEdge>::new();
     let mut authored_symmetric = BTreeSet::<(String, String, String)>::new();
 
     for relationship in direct {
@@ -56,6 +66,24 @@ fn infer_kinship_from_direct_relationships(
                 .push(edge);
         }
 
+        if matches!(
+            relationship.kind,
+            RelationshipKind::Spouse | RelationshipKind::Partner
+        ) {
+            let couple_key = ordered_pair(&relationship.source, &relationship.target);
+            let period = couple_periods.get(&couple_key);
+            spouse_edges.push(SpouseEdge {
+                left: relationship.source.clone(),
+                right: relationship.target.clone(),
+                relationship_id: relationship.id.clone(),
+                valid_from: period.and_then(|period| period.valid_from.clone()),
+                valid_until: period.and_then(|period| period.valid_until.clone()),
+                period_event_ids: period
+                    .map(|period| period.event_ids.clone())
+                    .unwrap_or_default(),
+            });
+        }
+
         if is_symmetric_kind(&relationship.kind) {
             authored_symmetric.insert(symmetric_key(
                 relationship.kind.as_value(),
@@ -68,6 +96,7 @@ fn infer_kinship_from_direct_relationships(
     let mut derived = BTreeMap::<(String, String, String), LocalDerivedKinshipRelationship>::new();
 
     infer_siblings(&parent_to_children, &authored_symmetric, &mut derived);
+    infer_step_parents(&parent_to_children, &spouse_edges, &direct, &mut derived);
     infer_grandparents(&parent_to_children, &mut derived);
     infer_ancestors(&parent_to_children, &mut derived);
     infer_aunts_uncles(&parent_to_children, &mut derived);
@@ -81,6 +110,85 @@ struct ParentChildEdge {
     parent: String,
     child: String,
     relationship_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpouseEdge {
+    left: String,
+    right: String,
+    relationship_id: String,
+    valid_from: Option<String>,
+    valid_until: Option<String>,
+    period_event_ids: Vec<String>,
+}
+
+fn infer_step_parents(
+    parent_to_children: &BTreeMap<String, Vec<ParentChildEdge>>,
+    spouse_edges: &[SpouseEdge],
+    direct: &[DirectRelationship],
+    derived: &mut BTreeMap<(String, String, String), LocalDerivedKinshipRelationship>,
+) {
+    for spouse in spouse_edges {
+        infer_step_parent_direction(
+            parent_to_children,
+            spouse,
+            &spouse.left,
+            &spouse.right,
+            direct,
+            derived,
+        );
+        infer_step_parent_direction(
+            parent_to_children,
+            spouse,
+            &spouse.right,
+            &spouse.left,
+            direct,
+            derived,
+        );
+    }
+}
+
+fn infer_step_parent_direction(
+    parent_to_children: &BTreeMap<String, Vec<ParentChildEdge>>,
+    spouse: &SpouseEdge,
+    parent: &str,
+    step_parent: &str,
+    direct: &[DirectRelationship],
+    derived: &mut BTreeMap<(String, String, String), LocalDerivedKinshipRelationship>,
+) {
+    let Some(children) = parent_to_children.get(parent) else {
+        return;
+    };
+
+    for child in children {
+        if child.child == step_parent || has_direct_parent_child(direct, step_parent, &child.child)
+        {
+            continue;
+        }
+        let mut inferred_from = vec![
+            spouse.relationship_id.clone(),
+            child.relationship_id.clone(),
+        ];
+        inferred_from.extend(spouse.period_event_ids.clone());
+        insert_derived_with_period(
+            derived,
+            "step-parent-child",
+            step_parent.to_string(),
+            child.child.clone(),
+            1,
+            inferred_from,
+            spouse.valid_from.clone(),
+            spouse.valid_until.clone(),
+        );
+    }
+}
+
+fn has_direct_parent_child(direct: &[DirectRelationship], parent: &str, child: &str) -> bool {
+    direct.iter().any(|relationship| {
+        relationship.kind.is_parent_child()
+            && relationship.source == parent
+            && relationship.target == child
+    })
 }
 
 fn infer_siblings(
@@ -291,6 +399,28 @@ fn insert_derived(
     depth: u32,
     inferred_from: Vec<String>,
 ) {
+    insert_derived_with_period(
+        derived,
+        relationship_kind,
+        source,
+        target,
+        depth,
+        inferred_from,
+        None,
+        None,
+    );
+}
+
+fn insert_derived_with_period(
+    derived: &mut BTreeMap<(String, String, String), LocalDerivedKinshipRelationship>,
+    relationship_kind: &str,
+    source: String,
+    target: String,
+    depth: u32,
+    inferred_from: Vec<String>,
+    valid_from: Option<String>,
+    valid_until: Option<String>,
+) {
     if source == target {
         return;
     }
@@ -308,11 +438,97 @@ fn insert_derived(
             target,
             depth,
             inferred_from: Vec::new(),
+            valid_from: None,
+            valid_until: None,
         });
     entry.depth = entry.depth.min(depth);
+    if entry.valid_from.is_none() {
+        entry.valid_from = valid_from;
+    }
+    if entry.valid_until.is_none() {
+        entry.valid_until = valid_until;
+    }
     entry.inferred_from.extend(inferred_from);
     entry.inferred_from.sort();
     entry.inferred_from.dedup();
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CouplePeriod {
+    valid_from: Option<String>,
+    valid_until: Option<String>,
+    event_ids: Vec<String>,
+}
+
+fn couple_periods_from_events(
+    records: &[LocalMarkdownRecord],
+) -> BTreeMap<(String, String), CouplePeriod> {
+    let mut periods = BTreeMap::<(String, String), CouplePeriod>::new();
+    for record in records.iter().filter(|record| record.kind == "event") {
+        let event_type = record
+            .attributes
+            .get("type")
+            .and_then(serde_json::Value::as_str);
+        if !matches!(event_type, Some("marriage" | "divorce")) {
+            continue;
+        }
+        let participants = event_participant_entity_ids(record);
+        let [first, second, ..] = participants.as_slice() else {
+            continue;
+        };
+        let period = periods.entry(ordered_pair(first, second)).or_default();
+        match event_type {
+            Some("marriage") => {
+                set_earliest(&mut period.valid_from, event_time(record));
+            }
+            Some("divorce") => {
+                set_latest(&mut period.valid_until, event_time(record));
+            }
+            _ => {}
+        }
+        period.event_ids.push(record.id.clone());
+    }
+
+    for period in periods.values_mut() {
+        period.event_ids.sort();
+        period.event_ids.dedup();
+    }
+
+    periods
+}
+
+fn event_time(record: &LocalMarkdownRecord) -> Option<String> {
+    record.date.clone().or_else(|| {
+        record
+            .attributes
+            .get("time")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn set_earliest(current: &mut Option<String>, value: Option<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if current
+        .as_ref()
+        .is_none_or(|current| value.as_str() < current.as_str())
+    {
+        *current = Some(value);
+    }
+}
+
+fn set_latest(current: &mut Option<String>, value: Option<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if current
+        .as_ref()
+        .is_none_or(|current| value.as_str() > current.as_str())
+    {
+        *current = Some(value);
+    }
 }
 
 fn direct_relationship_from_document(document: &LocalTomlDocument) -> Option<DirectRelationship> {
@@ -381,6 +597,46 @@ mod tests {
     use crate::local_authoring::compile_local_data;
 
     #[test]
+    fn infers_step_parent_from_parent_spouse_relationship() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-step-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+        fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+        for slug in ["child", "mother", "stepfather"] {
+            fs::write(
+                temp_dir.join(format!("entities/people/{slug}.md")),
+                format!(
+                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\npreferred_name = \"{slug}\"\n+++\n"
+                ),
+            )
+            .expect("person");
+        }
+        write_relationship(&temp_dir, "mother-child", "person:mother", "person:child");
+        fs::write(
+            temp_dir.join("relationships/mother-stepfather-spouse.toml"),
+            "relationship = \"spouse\"\nsource = \"person:mother\"\ntarget = \"person:stepfather\"\n",
+        )
+        .expect("spouse relationship");
+
+        let bundle = compile_local_data(&temp_dir).expect("compile local data");
+        let derived = infer_local_kinship_relationships(&bundle);
+
+        assert!(derived.iter().any(|relationship| {
+            relationship.relationship_kind == "step-parent-child"
+                && relationship.source == "person:stepfather"
+                && relationship.target == "person:child"
+        }));
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
     fn infers_common_kinship_from_parent_child_relationships() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-kinship-{}-{}",
@@ -396,7 +652,7 @@ mod tests {
             fs::write(
                 temp_dir.join(format!("entities/people/{slug}.md")),
                 format!(
-                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\nprimary_name = \"{slug}\"\n+++\n"
+                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\npreferred_name = \"{slug}\"\n+++\n"
                 ),
             )
             .expect("person");

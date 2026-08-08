@@ -376,13 +376,6 @@ fn event_title(
     record
         .title
         .clone()
-        .or_else(|| {
-            record
-                .attributes
-                .get("primary_name")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
         .or_else(|| default_event_label(record, |entity| entity_names.get(entity).cloned()))
 }
 
@@ -403,21 +396,21 @@ fn markdown_record_name(record: &LocalMarkdownRecord) -> Option<String> {
     record
         .title
         .clone()
+        .or_else(|| markdown_name_table(record, "preferred"))
+        .or_else(|| markdown_name_table(record, "legal"))
+}
+
+fn markdown_name_table(record: &LocalMarkdownRecord, usage: &str) -> Option<String> {
+    let table = record.attributes.get("names")?.get(usage)?;
+    table
+        .get("display")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| table.get("full").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
         .or_else(|| {
-            record
-                .attributes
-                .get("primary_name")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            record
-                .attributes
-                .get("names")
-                .and_then(|names| names.get("primary"))
-                .and_then(|primary| primary.get("full"))
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
+            let given = table.get("given").and_then(serde_json::Value::as_str)?;
+            let family = table.get("family").and_then(serde_json::Value::as_str)?;
+            Some(format!("{given} {family}"))
         })
 }
 
@@ -570,7 +563,7 @@ mod tests {
         let world_root = temp_dir.join("worlds/default");
         fs::write(
             world_root.join("entities/people/morgan-example.md"),
-            "+++\nschema_version = 1\nid = \"person:morgan-example\"\nkind = \"person\"\nprimary_name = \"Morgan Example\"\n+++\n\n# Morgan\n",
+            "+++\nschema_version = 1\nid = \"person:morgan-example\"\nkind = \"person\"\npreferred_name = \"Morgan Example\"\n+++\n\n# Morgan\n",
         )
         .expect("related person");
         fs::write(

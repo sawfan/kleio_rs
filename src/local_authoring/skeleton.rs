@@ -15,6 +15,7 @@ pub const DEFAULT_SOURCE_ID: &str = "personal-knowledge";
 pub struct LocalPersonOptions {
     pub person_slug: String,
     pub person_name: String,
+    pub sex: Option<String>,
     pub birth_date: Option<String>,
     pub birth_location: Option<String>,
     pub birth_latitude: Option<f64>,
@@ -124,6 +125,7 @@ pub fn create_local_person(
         &person_markdown(&PersonTemplate {
             person_id: options.person_id(),
             person_name: options.person_name.clone(),
+            sex: options.sex.clone(),
         }),
         options.force,
     )?;
@@ -185,9 +187,18 @@ pub fn create_local_birth_event(
         birth_latitude: options.birth_latitude,
         birth_longitude: options.birth_longitude,
     };
+    let birth_event_path = paths.births_dir().join(birth_event_filename(options));
+    if options.force {
+        remove_existing_birth_event_files(
+            world_root,
+            &paths.births_dir(),
+            &options.birth_event_id(),
+            &birth_event_path,
+        )?;
+    }
     write_new_file(
         world_root,
-        &paths.births_dir().join(birth_event_filename(options)),
+        &birth_event_path,
         &birth_event_markdown(&birth_template),
         options.force,
     )?;
@@ -313,6 +324,7 @@ pub fn create_world_skeleton(
         &person_markdown(&PersonTemplate {
             person_id: options.person_id(),
             person_name: options.person_name.clone(),
+            sex: None,
         }),
         options.force,
     )?;
@@ -370,10 +382,10 @@ fn write_schema_seed_files(
             "Stable world-scoped identity for an entity, event, or view.",
         ),
         (
-            "primary-name.toml",
-            "component:primary-name",
-            "PrimaryName",
-            "Human-readable primary display name.",
+            "name.toml",
+            "component:name",
+            "Name",
+            "Human-readable display and authored name parts.",
         ),
         (
             "participants.toml",
@@ -510,6 +522,7 @@ fn world_toml(options: &LocalSkeletonOptions) -> Result<String, LocalAuthoringEr
 struct PersonTemplate {
     person_id: String,
     person_name: String,
+    sex: Option<String>,
 }
 
 struct BirthEventTemplate {
@@ -522,31 +535,38 @@ struct BirthEventTemplate {
 }
 
 fn person_markdown(options: &PersonTemplate) -> String {
-    let (given, family) = split_display_name(&options.person_name);
+    let sex_line = options
+        .sex
+        .as_deref()
+        .map(|sex| format!("sex = \"{}\"\n", escape_toml_basic(sex)))
+        .unwrap_or_default();
     format!(
         r#"+++
 schema_version = 1
 id = "{}"
 kind = "person"
-primary_name = "{}"
-tags = ["starter"]
+preferred_name = "{}"
+{}tags = ["starter"]
 related = []
-
-[names.primary]
-full = "{}"
-given = "{}"
-family = "{}"
 +++
 
 # {}
 
-Add biographical notes here. Keep concrete life facts in `events/` so timeline and tree views can project source-backed world data.
+## Notes
+
+Write biographical notes, memories, research notes, or unresolved questions here.
+Keep dated life facts in `events/` so timeline and tree views can project them.
+
+## Known details
+
+- Preferred name:
+- Other names:
+- Important places:
+- Open questions:
 "#,
         escape_toml_basic(&options.person_id),
         escape_toml_basic(&options.person_name),
-        escape_toml_basic(&options.person_name),
-        escape_toml_basic(&given),
-        escape_toml_basic(&family),
+        sex_line,
         options.person_name
     )
 }
@@ -600,6 +620,46 @@ fn filename_datetime(value: &str) -> String {
     value.trim().replace(' ', "T").replace(':', "-")
 }
 
+fn remove_existing_birth_event_files(
+    root: &Path,
+    births_dir: &Path,
+    birth_event_id: &str,
+    keep_path: &Path,
+) -> Result<(), LocalAuthoringError> {
+    if !births_dir.exists() {
+        return Ok(());
+    }
+
+    let expected_id_line = format!("id = \"{}\"", escape_toml_basic(birth_event_id));
+    let entries = fs::read_dir(births_dir).map_err(|source| LocalAuthoringError::Io {
+        path: display_path(root, births_dir),
+        source,
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| LocalAuthoringError::Io {
+            path: display_path(root, births_dir),
+            source,
+        })?;
+        let path = entry.path();
+        if path == keep_path || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).map_err(|source| LocalAuthoringError::Io {
+            path: display_path(root, &path),
+            source,
+        })?;
+        if text.lines().any(|line| line.trim() == expected_id_line) {
+            fs::remove_file(&path).map_err(|source| LocalAuthoringError::Io {
+                path: display_path(root, &path),
+                source,
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
 fn birth_event_markdown(options: &BirthEventTemplate) -> String {
     let date_line = options
         .birth_date
@@ -626,15 +686,22 @@ schema_version = 1
 id = "{}"
 kind = "event"
 type = "birth"
-{}participants = [
-  "self",
-]
-{}{}
+subject = "self"
+{}{}{}
 +++
 
 # Birth of {}
 
-Generated starter birth event. Edit the frontmatter above with the best available birth date, time, location, and source evidence. Bare participant, place, and source values are accepted where the context is clear.
+## Notes
+
+Record birth details, uncertainty, context, or family memory here. Keep the
+structured date/time/location and birth `subject` in the frontmatter above.
+
+## Evidence
+
+List birth certificate notes, oral-history details, transcript snippets, or
+follow-up tasks here. Use `sources` and inline `[[assertions]]` above for
+structured evidence links.
 "##,
         escape_toml_basic(&options.event_id),
         date_line,
@@ -729,7 +796,19 @@ date_accessed = "2026-07-09"
 media = []
 +++
 
+# Personal knowledge placeholder
+
+## Citation
+
+Describe whose personal knowledge this represents and when it was recorded.
+
+## Notes
+
 Use this placeholder only until you have a more specific source.
+
+## Transcript
+
+Add interview notes, message excerpts, or memory notes when useful.
 "#
     .to_string()
 }
@@ -940,18 +1019,6 @@ fn validate_slug(value: &str, label: &str) -> Result<(), LocalAuthoringError> {
     Ok(())
 }
 
-fn split_display_name(name: &str) -> (String, String) {
-    let mut parts = name.split_whitespace().collect::<Vec<_>>();
-    match parts.len() {
-        0 => (String::new(), String::new()),
-        1 => (parts[0].to_string(), String::new()),
-        _ => {
-            let surname = parts.pop().unwrap_or_default().to_string();
-            (parts.join(" "), surname)
-        }
-    }
-}
-
 fn escape_toml_basic(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -1013,8 +1080,8 @@ mod tests {
         )))
         .expect("event text");
         assert!(event_text.contains("type = \"birth\""));
-        assert!(event_text.contains("participants = ["));
-        assert!(event_text.contains("\"self\""));
+        assert!(event_text.contains("subject = \"self\""));
+        assert!(!event_text.contains("participants = ["));
         assert!(!event_text.contains("title ="));
         assert!(event_text.contains("date_precision = \"minute\""));
         assert!(event_text.contains("target = \"#date\""));

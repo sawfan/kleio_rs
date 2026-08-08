@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    Attribute, DateValue, EventId, GenealogyEvent, GenealogyEventKind, Name, Person, PersonId,
-    Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
+    Attribute, DateValue, EventId, GenealogyEvent, GenealogyEventKind, Name, ParentRole, Person,
+    PersonId, Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
 };
 
 use super::{
@@ -58,6 +58,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
 
     let mut person_ids = BTreeMap::<String, PersonId>::new();
     let mut person_names = BTreeMap::<String, String>::new();
+    let mut person_sexes = BTreeMap::<String, Sex>::new();
     for record in bundle
         .markdown_records
         .iter()
@@ -72,17 +73,14 @@ pub(super) fn tree_from_local_data_bundle_with_view(
             .get("sex")
             .and_then(serde_json::Value::as_str)
             .map(parse_sex);
+        if let Some(sex) = &sex {
+            person_sexes.insert(record.id.clone(), sex.clone());
+        }
         let mut provenance = local_record_provenance(record);
         provenance.tags.extend(record.tags.iter().cloned().map(Tag));
         tree.people.push(Person {
             id: person_id,
-            names: vec![Name {
-                display,
-                given: markdown_given(record),
-                surname: markdown_surname(record),
-                aliases: string_array_attribute(record.attributes.get("aliases")),
-                provenance: local_record_provenance(record),
-            }],
+            names: person_names_from_record(record, display),
             sex,
             events: Vec::new(),
             families_as_child: Vec::new(),
@@ -240,6 +238,8 @@ pub(super) fn tree_from_local_data_bundle_with_view(
             .find(|relationship| relationship.id == relationship_id)
         {
             relationship.label = document.title.clone();
+            relationship.parent_role =
+                relationship_parent_role(document, &relationship.kind, &source_key, &person_sexes);
             relationship.provenance.sources.push(SourceRef(format!(
                 "local:{}",
                 document.id.clone().unwrap_or_else(|| document.path.clone())
@@ -273,6 +273,24 @@ pub(super) fn tree_from_local_data_bundle_with_view(
     }
 
     Ok(tree)
+}
+
+fn relationship_parent_role(
+    document: &LocalTomlDocument,
+    relationship_kind: &RelationshipKind,
+    source_key: &str,
+    person_sexes: &BTreeMap<String, Sex>,
+) -> Option<ParentRole> {
+    if !relationship_kind.is_parent_child() {
+        return None;
+    }
+
+    document
+        .data
+        .get("parent_role")
+        .and_then(serde_json::Value::as_str)
+        .and_then(ParentRole::from_value)
+        .or_else(|| person_sexes.get(source_key).and_then(ParentRole::from_sex))
 }
 
 fn select_tree_view<'a>(
@@ -453,26 +471,87 @@ fn relationship_kind_matches(kind: &RelationshipKind, filter_value: &str) -> boo
     }
 }
 
+fn preferred_name_table(record: &LocalMarkdownRecord) -> Option<&serde_json::Value> {
+    record.attributes.get("names")?.get("preferred")
+}
+
+fn legal_name_table(record: &LocalMarkdownRecord) -> Option<&serde_json::Value> {
+    record.attributes.get("names")?.get("legal")
+}
+
+fn name_table_string(table: &serde_json::Value, key: &str) -> Option<String> {
+    table
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn name_display_from_table(table: &serde_json::Value) -> Option<String> {
+    name_table_string(table, "display")
+        .or_else(|| name_table_string(table, "full"))
+        .or_else(|| {
+            let given = name_table_string(table, "given");
+            let family = name_table_string(table, "family");
+            match (given, family) {
+                (Some(given), Some(family)) => Some(format!("{given} {family}")),
+                (Some(given), None) => Some(given),
+                (None, Some(family)) => Some(family),
+                (None, None) => None,
+            }
+        })
+}
+
+fn name_from_table(usage: &str, table: &serde_json::Value, provenance: Provenance) -> Option<Name> {
+    Some(Name {
+        usage: Some(usage.to_string()),
+        display: name_display_from_table(table)?,
+        full: name_table_string(table, "full"),
+        given: name_table_string(table, "given"),
+        middle: name_table_string(table, "middle"),
+        surname: name_table_string(table, "family").or_else(|| name_table_string(table, "surname")),
+        aliases: string_array_attribute(table.get("aliases")),
+        provenance,
+    })
+}
+
+fn person_names_from_record(record: &LocalMarkdownRecord, display: String) -> Vec<Name> {
+    let provenance = local_record_provenance(record);
+    let mut names = Vec::new();
+
+    if let Some(preferred) = preferred_name_table(record)
+        && let Some(name) = name_from_table("preferred", preferred, provenance.clone())
+    {
+        names.push(name);
+    }
+    if let Some(legal) = legal_name_table(record)
+        && let Some(name) = name_from_table("legal", legal, provenance.clone())
+    {
+        names.push(name);
+    }
+
+    if names.is_empty() {
+        names.push(Name {
+            usage: Some("legal".to_string()),
+            display,
+            full: legal_name_table(record).and_then(|legal| name_table_string(legal, "full")),
+            given: markdown_given(record),
+            middle: legal_name_table(record).and_then(|legal| name_table_string(legal, "middle")),
+            surname: markdown_surname(record),
+            aliases: string_array_attribute(record.attributes.get("aliases")),
+            provenance,
+        });
+    }
+
+    names
+}
+
 fn markdown_title(record: &LocalMarkdownRecord) -> Option<String> {
     record
         .title
         .clone()
-        .or_else(|| {
-            record
-                .attributes
-                .get("primary_name")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            record
-                .attributes
-                .get("names")
-                .and_then(|names| names.get("primary"))
-                .and_then(|primary| primary.get("full"))
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
+        .or_else(|| preferred_name_table(record).and_then(name_display_from_table))
+        .or_else(|| legal_name_table(record).and_then(name_display_from_table))
 }
 
 fn markdown_given(record: &LocalMarkdownRecord) -> Option<String> {
@@ -484,8 +563,8 @@ fn markdown_given(record: &LocalMarkdownRecord) -> Option<String> {
             record
                 .attributes
                 .get("names")
-                .and_then(|names| names.get("primary"))
-                .and_then(|primary| primary.get("given"))
+                .and_then(|names| names.get("preferred"))
+                .and_then(|preferred| preferred.get("given"))
                 .and_then(serde_json::Value::as_str)
         })
         .map(ToOwned::to_owned)
@@ -501,8 +580,8 @@ fn markdown_surname(record: &LocalMarkdownRecord) -> Option<String> {
             record
                 .attributes
                 .get("names")
-                .and_then(|names| names.get("primary"))
-                .and_then(|primary| primary.get("family"))
+                .and_then(|names| names.get("preferred"))
+                .and_then(|preferred| preferred.get("family"))
                 .and_then(serde_json::Value::as_str)
         })
         .map(ToOwned::to_owned)
@@ -529,15 +608,18 @@ fn event_participants(
     record: &LocalMarkdownRecord,
     person_ids: &BTreeMap<String, PersonId>,
 ) -> Result<Vec<PersonId>, LocalAuthoringError> {
-    let Some(value) = record.attributes.get("participants") else {
+    if !record.attributes.contains_key("participants") && !record.attributes.contains_key("subject")
+    {
         return Ok(record
             .related
             .iter()
             .filter_map(|id| person_ids.get(id).copied())
             .collect());
-    };
+    }
 
-    if !value.is_array() {
+    if let Some(value) = record.attributes.get("participants")
+        && !value.is_array()
+    {
         return Err(LocalAuthoringError::Validation {
             message: format!("{} `participants` must be an array", record.path),
         });
@@ -551,16 +633,15 @@ fn event_participants(
             .ok_or_else(|| LocalAuthoringError::Validation {
                 message: format!("{} participant missing `entity`", record.path),
             })?;
-        let person_id =
-            person_ids
-                .get(entity_id)
-                .copied()
-                .ok_or_else(|| LocalAuthoringError::Validation {
-                    message: format!(
-                        "{} references missing participant `{entity_id}`",
-                        record.path
-                    ),
-                })?;
+        let person_key = resolve_person_key(entity_id, person_ids);
+        let person_id = person_ids.get(&person_key).copied().ok_or_else(|| {
+            LocalAuthoringError::Validation {
+                message: format!(
+                    "{} references missing participant `{person_key}`",
+                    record.path
+                ),
+            }
+        })?;
         if !participants.contains(&person_id) {
             participants.push(person_id);
         }

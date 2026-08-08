@@ -2,14 +2,10 @@
 schema_version = 1
 id = "person:taylor-example-partner"
 kind = "person"
-primary_name = "Taylor Example Partner"
+preferred_name = "Taylor Example Partner"
 tags = ["fictional", "partner-example"]
 related = ["person:alex-example"]
 
-[names.primary]
-full = "Taylor Example Partner"
-given = "Taylor"
-family = "Example Partner"
 +++
 
 # Taylor Example Partner

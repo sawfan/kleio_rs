@@ -2,7 +2,7 @@
 schema_version = 1
 id = "place:example-town"
 kind = "place"
-primary_name = "Example Town"
+title = "Example Town"
 tags = ["fictional"]
 +++
 

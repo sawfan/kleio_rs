@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use super::{
     LocalAuthoringError, LocalMarkdownRecord, LocalTomlDocument,
-    event_profiles::{event_participants, validate_event_type_value},
+    event_profiles::{event_participant_entity_ids, event_participants, validate_event_type_value},
     locations::{normalize_place_entity_id, validate_inline_location_value, validate_place_item},
     refs::{normalize_person_id, normalize_source_id, validate_contextual_id},
     sources::validate_source_items,
@@ -56,6 +56,10 @@ pub(super) fn validate_local_data(
 
         if let Some(participants) = record.attributes.get("participants") {
             validate_participant_items(record, participants, &ids)?;
+        }
+
+        if let Some(subject) = record.attributes.get("subject") {
+            validate_subject_item(record, subject, &ids)?;
         }
 
         if let Some(places) = record.attributes.get("places") {
@@ -155,6 +159,22 @@ fn validate_relationship_document(
             return Err(LocalAuthoringError::Validation {
                 message: format!(
                     "{} references missing relationship {field} `{person_id}`",
+                    document.path
+                ),
+            });
+        }
+    }
+
+    if let Some(parent_role) = document.data.get("parent_role") {
+        let Some(parent_role) = parent_role.as_str() else {
+            return Err(LocalAuthoringError::Validation {
+                message: format!("{} `parent_role` must be a string", document.path),
+            });
+        };
+        if !matches!(parent_role, "father" | "mother" | "parent" | "unknown") {
+            return Err(LocalAuthoringError::Validation {
+                message: format!(
+                    "{} `parent_role` must be father, mother, parent, or unknown",
                     document.path
                 ),
             });
@@ -278,6 +298,20 @@ fn nested_string<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a 
     current.as_str()
 }
 
+fn validate_subject_item(
+    record: &LocalMarkdownRecord,
+    item: &serde_json::Value,
+    ids: &BTreeSet<String>,
+) -> Result<(), LocalAuthoringError> {
+    let Some(entity_id) = item.as_str() else {
+        return Err(LocalAuthoringError::Validation {
+            message: format!("{} `subject` must be an entity id string", record.path),
+        });
+    };
+    validate_contextual_id(entity_id, "event subject")?;
+    validate_referenced_id(record, &normalize_person_id(entity_id), ids, "subject")
+}
+
 fn validate_participant_items(
     record: &LocalMarkdownRecord,
     items: &serde_json::Value,
@@ -291,9 +325,20 @@ fn validate_participant_items(
 
     for raw_item in raw_items {
         match raw_item {
+            serde_json::Value::String(entity_id) if entity_id == "self" => {
+                validate_participant_referenced_id(
+                    record,
+                    &event_participant_entity_ids(record)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| normalize_person_id(entity_id)),
+                    ids,
+                    "participants",
+                )?;
+            }
             serde_json::Value::String(entity_id) => {
                 validate_contextual_id(entity_id, "event participant")?;
-                validate_referenced_id(
+                validate_participant_referenced_id(
                     record,
                     &normalize_person_id(entity_id),
                     ids,
@@ -318,9 +363,26 @@ fn validate_participant_items(
                 message: format!("{} participant item missing `entity`", record.path),
             });
         };
-        validate_referenced_id(record, entity_id, ids, "participants")?;
+        validate_participant_referenced_id(record, entity_id, ids, "participants")?;
     }
 
+    Ok(())
+}
+
+fn validate_participant_referenced_id(
+    record: &LocalMarkdownRecord,
+    id: &str,
+    ids: &BTreeSet<String>,
+    field: &str,
+) -> Result<(), LocalAuthoringError> {
+    if !ids.contains(id) {
+        return Err(LocalAuthoringError::Validation {
+            message: format!(
+                "{} references missing {field} entity `{id}`. Run `kleio-cli list-people --filter <local text>` to find the local person id. For person-centered events, use `subject = \"<person-id-or-slug>\"`; simple birth events can omit participants when the event id is `event:birth-<person-slug>`.",
+                record.path
+            ),
+        });
+    }
     Ok(())
 }
 

@@ -35,6 +35,7 @@ mod refs;
 mod schema;
 mod skeleton;
 mod sources;
+mod summary;
 mod timeline_compile;
 mod tree_compile;
 mod validation;
@@ -68,11 +69,19 @@ pub use records::{
     create_local_event, create_local_relationship, create_local_source,
 };
 pub use schema::{LocalSchemaKind, LocalSchemaOptions, create_local_schema};
-
 pub use skeleton::{
     LocalBirthEventOptions, LocalPersonOptions, LocalSkeletonOptions, create_local_birth_event,
     create_local_person, create_local_skeleton, create_workspace_skeleton, create_world_layout,
     create_world_skeleton,
+};
+
+pub use summary::{
+    LocalMediaCheckReport, LocalMediaReferenceCheck, LocalWorldDiagnostic,
+    LocalWorldDiagnosticKind, LocalWorldDiagnosticSeverity, LocalWorldDoctorReport,
+    LocalWorldSummary, LocalWorldSummaryCounts, LocalWorldSummaryWarning,
+    LocalWorldSummaryWarningKind, check_local_media, check_local_media_bundle,
+    doctor_local_data_bundle, doctor_local_world, summarize_local_data_bundle,
+    summarize_local_world,
 };
 pub use timeline_compile::{
     LocalTimelineCollection, LocalTimelineCollectionMember, LocalTimelineEvent,
@@ -207,6 +216,19 @@ impl Error for LocalAuthoringError {
 pub fn compile_local_data(
     source_root: impl AsRef<Path>,
 ) -> Result<LocalDataBundle, LocalAuthoringError> {
+    read_local_data(source_root, true)
+}
+
+pub fn read_local_data_unvalidated(
+    source_root: impl AsRef<Path>,
+) -> Result<LocalDataBundle, LocalAuthoringError> {
+    read_local_data(source_root, false)
+}
+
+fn read_local_data(
+    source_root: impl AsRef<Path>,
+    validate: bool,
+) -> Result<LocalDataBundle, LocalAuthoringError> {
     let source_root = source_root.as_ref();
     let mut markdown_records = Vec::new();
     let mut toml_documents = Vec::new();
@@ -223,7 +245,9 @@ pub fn compile_local_data(
         }
     }
 
-    validate_local_data(&markdown_records, &toml_documents)?;
+    if validate {
+        validate_local_data(&markdown_records, &toml_documents)?;
+    }
 
     Ok(LocalDataBundle {
         schema_version: LocalDataBundle::SCHEMA_VERSION,
@@ -445,7 +469,8 @@ fn read_markdown_record(
     let tags = take_string_array(&mut table, "tags", &full_path)?;
     let related = take_string_array(&mut table, "related", &full_path)?;
     let place = take_optional_string(&mut table, "place", &full_path)?;
-    apply_event_filename_hints(relative_path, &mut table)?;
+    apply_event_filename_hints(relative_path, &id, &kind, &mut table)?;
+    apply_person_filename_hints(relative_path, &kind, &mut table, title.as_deref());
     let attributes = toml_table_to_json_map(table, &full_path)?;
 
     Ok(LocalMarkdownRecord {
@@ -463,8 +488,136 @@ fn read_markdown_record(
     })
 }
 
+fn apply_person_filename_hints(
+    relative_path: &Path,
+    kind: &str,
+    table: &mut toml::Table,
+    title: Option<&str>,
+) {
+    if kind != "person" || !relative_path.starts_with("entities/people") {
+        return;
+    }
+
+    let Some(legal_name) = inferred_name_from_person_filename(relative_path) else {
+        return;
+    };
+
+    if !has_name_table(table, "legal") {
+        insert_name_table(table, "legal", &legal_name);
+    }
+
+    if !has_name_table(table, "preferred") {
+        let preferred = table
+            .remove("preferred_name")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .or_else(|| title.map(ToOwned::to_owned));
+        if let Some(preferred_name) = preferred
+            && let Some(preferred) =
+                preferred_name_parts(&preferred_name, legal_name.family.as_deref())
+        {
+            insert_name_table(table, "preferred", &preferred);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InferredNameParts {
+    full: String,
+    given: Option<String>,
+    middle: Option<String>,
+    family: Option<String>,
+}
+
+fn inferred_name_from_person_filename(relative_path: &Path) -> Option<InferredNameParts> {
+    let stem = relative_path.file_stem()?.to_str()?;
+    name_parts_from_words(
+        stem.split(['-', '_'])
+            .filter(|part| !part.trim().is_empty())
+            .map(title_case_slug_word)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn preferred_name_parts(value: &str, legal_family: Option<&str>) -> Option<InferredNameParts> {
+    let mut words = value
+        .split_whitespace()
+        .filter(|part| !part.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        return None;
+    }
+
+    if words.len() == 1
+        && let Some(family) = legal_family
+    {
+        words.push(family.to_string());
+    }
+
+    name_parts_from_words(words)
+}
+
+fn name_parts_from_words(words: Vec<String>) -> Option<InferredNameParts> {
+    if words.is_empty() {
+        return None;
+    }
+
+    let full = words.join(" ");
+    let given = words.first().cloned();
+    let family = (words.len() > 1).then(|| words[words.len() - 1].clone());
+    let middle = (words.len() > 2).then(|| words[1..words.len() - 1].join(" "));
+
+    Some(InferredNameParts {
+        full,
+        given,
+        middle,
+        family,
+    })
+}
+
+fn title_case_slug_word(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+fn has_name_table(table: &toml::Table, usage: &str) -> bool {
+    table
+        .get("names")
+        .and_then(toml::Value::as_table)
+        .and_then(|names| names.get(usage))
+        .and_then(toml::Value::as_table)
+        .is_some()
+}
+
+fn insert_name_table(table: &mut toml::Table, usage: &str, parts: &InferredNameParts) {
+    let names = table
+        .entry("names".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let Some(names) = names.as_table_mut() else {
+        return;
+    };
+
+    let mut name = toml::Table::new();
+    name.insert("full".to_string(), toml::Value::String(parts.full.clone()));
+    if let Some(given) = &parts.given {
+        name.insert("given".to_string(), toml::Value::String(given.clone()));
+    }
+    if let Some(middle) = &parts.middle {
+        name.insert("middle".to_string(), toml::Value::String(middle.clone()));
+    }
+    if let Some(family) = &parts.family {
+        name.insert("family".to_string(), toml::Value::String(family.clone()));
+    }
+    names.insert(usage.to_string(), toml::Value::Table(name));
+}
+
 fn apply_event_filename_hints(
     relative_path: &Path,
+    id: &str,
+    kind: &str,
     table: &mut toml::Table,
 ) -> Result<(), LocalAuthoringError> {
     let hints = event_filename_hints(relative_path)?;
@@ -487,12 +640,13 @@ fn apply_event_filename_hints(
             .or_insert(toml::Value::String(time_basis));
     }
 
-    if let Some(participant) = hints.participant {
-        if !table.contains_key("participants") {
-            table.insert(
-                "participants".to_string(),
-                toml::Value::Array(vec![toml::Value::String(participant)]),
-            );
+    let participant = hints
+        .participant
+        .or_else(|| infer_birth_participant(relative_path, id, kind, table));
+    if let Some(participant) = participant {
+        replace_self_subject(table, &participant);
+        if !table.contains_key("participants") && !table.contains_key("subject") {
+            table.insert("subject".to_string(), toml::Value::String(participant));
         } else {
             replace_self_participants(table, &participant);
         }
@@ -503,6 +657,33 @@ fn apply_event_filename_hints(
     }
 
     Ok(())
+}
+
+fn infer_birth_participant(
+    relative_path: &Path,
+    id: &str,
+    kind: &str,
+    table: &toml::Table,
+) -> Option<String> {
+    if kind != "event" {
+        return None;
+    }
+    let event_type = table.get("type").and_then(toml::Value::as_str)?;
+    if event_type != "birth" || !relative_path.starts_with("events/births") {
+        return None;
+    }
+    id.strip_prefix("event:birth-")
+        .filter(|slug| !slug.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn replace_self_subject(table: &mut toml::Table, participant: &str) {
+    if table.get("subject").and_then(toml::Value::as_str) == Some("self") {
+        table.insert(
+            "subject".to_string(),
+            toml::Value::String(participant.to_string()),
+        );
+    }
 }
 
 fn replace_self_participants(table: &mut toml::Table, participant: &str) {
@@ -585,8 +766,16 @@ fn read_toml_document(
             path: full_path.clone(),
             source,
         })?;
-    let id = value.get("id").and_then(toml_value_as_string);
-    let kind = value.get("kind").and_then(toml_value_as_string);
+    let inferred_id = infer_toml_document_id(relative_path);
+    let inferred_kind = infer_toml_document_kind(relative_path);
+    let id = value
+        .get("id")
+        .and_then(toml_value_as_string)
+        .or(inferred_id);
+    let kind = value
+        .get("kind")
+        .and_then(toml_value_as_string)
+        .or(inferred_kind);
     let title = value.get("title").and_then(toml_value_as_string);
     let data = serde_json::to_value(value).map_err(|source| LocalAuthoringError::Json {
         path: full_path,
@@ -600,6 +789,23 @@ fn read_toml_document(
         title,
         data,
     })
+}
+
+fn infer_toml_document_id(relative_path: &Path) -> Option<String> {
+    let stem = relative_path.file_stem()?.to_str()?;
+    if relative_path.starts_with("relationships") {
+        Some(format!("relationship:{stem}"))
+    } else {
+        None
+    }
+}
+
+fn infer_toml_document_kind(relative_path: &Path) -> Option<String> {
+    if relative_path.starts_with("relationships") {
+        Some("relationship".to_string())
+    } else {
+        None
+    }
 }
 
 fn split_toml_frontmatter<'a>(

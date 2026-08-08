@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use crate::ParentRole;
+
 use super::{
     LocalAuthoringError, LocalDataBundle, LocalMarkdownRecord, compile_local_data, event_locations,
     event_profiles::{event_participants, local_event_type_id},
@@ -49,6 +51,7 @@ pub struct LocalEcsRelationship {
     pub source: String,
     pub target: String,
     pub title: Option<String>,
+    pub parent_role: Option<String>,
     pub sources: Vec<String>,
 }
 
@@ -169,17 +172,17 @@ fn ecs_from_local_data_bundle(bundle: &LocalDataBundle) -> LocalEcsBundle {
                 visualizations,
             },
             relationships: LocalEcsRelationships {
-                items: ecs_relationships_from_documents(&bundle.toml_documents),
+                items: ecs_relationships_from_documents(bundle),
                 derived_kinship: infer_local_kinship_relationships(bundle),
             },
         },
     }
 }
 
-fn ecs_relationships_from_documents(
-    documents: &[super::LocalTomlDocument],
-) -> Vec<LocalEcsRelationship> {
-    let mut relationships = documents
+fn ecs_relationships_from_documents(bundle: &LocalDataBundle) -> Vec<LocalEcsRelationship> {
+    let person_sexes = person_sexes_by_id(&bundle.markdown_records);
+    let mut relationships = bundle
+        .toml_documents
         .iter()
         .filter(|document| document.kind.as_deref() == Some("relationship"))
         .filter_map(|document| {
@@ -220,16 +223,76 @@ fn ecs_relationships_from_documents(
                 .unwrap_or_default();
             Some(LocalEcsRelationship {
                 id,
-                relationship_kind,
-                source,
+                relationship_kind: relationship_kind.clone(),
+                source: source.clone(),
                 target,
                 title: document.title.clone(),
+                parent_role: relationship_parent_role(
+                    document,
+                    &relationship_kind,
+                    &source,
+                    &person_sexes,
+                ),
                 sources,
             })
         })
         .collect::<Vec<_>>();
     relationships.sort_by(|left, right| left.id.cmp(&right.id));
     relationships
+}
+
+fn relationship_parent_role(
+    document: &super::LocalTomlDocument,
+    relationship_kind: &str,
+    source: &str,
+    person_sexes: &BTreeMap<String, String>,
+) -> Option<String> {
+    if !is_parent_child_relationship_kind(relationship_kind) {
+        return None;
+    }
+
+    document
+        .data
+        .get("parent_role")
+        .and_then(serde_json::Value::as_str)
+        .and_then(ParentRole::from_value)
+        .map(|role| role.as_value().to_string())
+        .or_else(|| {
+            person_sexes
+                .get(source)
+                .and_then(|sex| parent_role_from_sex(sex))
+                .map(str::to_string)
+        })
+}
+
+fn person_sexes_by_id(records: &[LocalMarkdownRecord]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter(|record| record.kind == "person")
+        .filter_map(|record| {
+            let sex = record.attributes.get("sex")?.as_str()?;
+            Some((record.id.clone(), sex.to_string()))
+        })
+        .collect()
+}
+
+fn is_parent_child_relationship_kind(value: &str) -> bool {
+    matches!(
+        value,
+        "biological-parent-child"
+            | "adoptive-parent-child"
+            | "foster-parent-child"
+            | "step-parent-child"
+            | "guardian-child"
+    )
+}
+
+fn parent_role_from_sex(value: &str) -> Option<&'static str> {
+    match value {
+        "male" | "m" | "Male" => Some("father"),
+        "female" | "f" | "Female" => Some("mother"),
+        _ => None,
+    }
 }
 
 fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEntity {
@@ -255,11 +318,8 @@ fn ecs_entity_from_markdown_record(record: &LocalMarkdownRecord) -> LocalEcsEnti
             _ => unreachable!("matched above"),
         };
         components.insert(component.to_string(), serde_json::json!({}));
-        if let Some(full) = primary_name(record) {
-            components.insert(
-                "PrimaryName".to_string(),
-                serde_json::json!({ "full": full }),
-            );
+        if let Some(name) = entity_name(record) {
+            components.insert("Name".to_string(), serde_json::json!({ "display": name }));
         }
     }
 
@@ -422,13 +482,26 @@ fn json_string_ref(value: &serde_json::Value) -> Option<&String> {
     }
 }
 
-fn primary_name(record: &LocalMarkdownRecord) -> Option<&str> {
-    record.title.as_deref().or_else(|| {
-        record
-            .attributes
-            .get("primary_name")
-            .and_then(serde_json::Value::as_str)
-    })
+fn entity_name(record: &LocalMarkdownRecord) -> Option<String> {
+    record
+        .title
+        .clone()
+        .or_else(|| entity_name_table(record, "preferred"))
+        .or_else(|| entity_name_table(record, "legal"))
+}
+
+fn entity_name_table(record: &LocalMarkdownRecord, usage: &str) -> Option<String> {
+    let table = record.attributes.get("names")?.get(usage)?;
+    table
+        .get("display")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| table.get("full").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            let given = table.get("given").and_then(serde_json::Value::as_str)?;
+            let family = table.get("family").and_then(serde_json::Value::as_str)?;
+            Some(format!("{given} {family}"))
+        })
 }
 
 #[cfg(test)]
@@ -436,6 +509,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::RelationshipKind;
     use crate::local_authoring::{LocalSkeletonOptions, create_workspace_skeleton};
 
     #[test]
@@ -510,6 +584,103 @@ mod tests {
     }
 
     #[test]
+    fn includes_inferred_relationship_fields_and_parent_role() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-ecs-inferred-relationship-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+        fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+        fs::write(
+            temp_dir.join("entities/people/alex.md"),
+            "+++\nid = \"person:alex\"\nkind = \"person\"\npreferred_name = \"Alex\"\nsex = \"male\"\n+++\n",
+        )
+        .expect("alex");
+        fs::write(
+            temp_dir.join("entities/people/riley.md"),
+            "+++\nid = \"person:riley\"\nkind = \"person\"\npreferred_name = \"Riley\"\n+++\n",
+        )
+        .expect("riley");
+        fs::write(
+            temp_dir.join("relationships/alex-riley-parent-child.toml"),
+            "relationship = \"biological-parent-child\"\nsource = \"person:alex\"\ntarget = \"person:riley\"\n",
+        )
+        .expect("relationship");
+
+        let ecs = compile_local_ecs(&temp_dir).expect("compile ecs");
+        assert_eq!(
+            ecs.resources.relationships.items[0].id,
+            "relationship:alex-riley-parent-child"
+        );
+        assert_eq!(
+            ecs.resources.relationships.items[0].parent_role.as_deref(),
+            Some("father")
+        );
+
+        let tree = super::super::tree_from_local_data_bundle(
+            &compile_local_data(&temp_dir).expect("compile data"),
+        )
+        .expect("compile tree");
+        assert_eq!(tree.relationships[0].parent_role, Some(ParentRole::Father));
+        assert_eq!(
+            tree.relationships[0]
+                .kind
+                .label_with_parent_role(tree.relationships[0].parent_role),
+            "biological father"
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn manual_parent_role_overrides_inferred_sex() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleio-ecs-parent-role-override-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+        fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+        fs::write(
+            temp_dir.join("entities/people/alex.md"),
+            "+++\nid = \"person:alex\"\nkind = \"person\"\npreferred_name = \"Alex\"\nsex = \"male\"\n+++\n",
+        )
+        .expect("alex");
+        fs::write(
+            temp_dir.join("entities/people/riley.md"),
+            "+++\nid = \"person:riley\"\nkind = \"person\"\npreferred_name = \"Riley\"\n+++\n",
+        )
+        .expect("riley");
+        fs::write(
+            temp_dir.join("relationships/alex-riley-parent-child.toml"),
+            "relationship = \"biological-parent-child\"\nparent_role = \"mother\"\nsource = \"person:alex\"\ntarget = \"person:riley\"\n",
+        )
+        .expect("relationship");
+
+        let ecs = compile_local_ecs(&temp_dir).expect("compile ecs");
+        assert_eq!(
+            ecs.resources.relationships.items[0].parent_role.as_deref(),
+            Some("mother")
+        );
+
+        let tree = super::super::tree_from_local_data_bundle(
+            &compile_local_data(&temp_dir).expect("compile data"),
+        )
+        .expect("compile tree");
+        assert_eq!(tree.relationships[0].parent_role, Some(ParentRole::Mother));
+        assert!(RelationshipKind::BiologicalParentChild.is_parent_child());
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
     fn includes_inferred_kinship_relationship_resources() {
         let temp_dir = std::env::temp_dir().join(format!(
             "kleio-ecs-derived-kinship-{}-{}",
@@ -525,7 +696,7 @@ mod tests {
             fs::write(
                 temp_dir.join(format!("entities/people/{slug}.md")),
                 format!(
-                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\nprimary_name = \"{slug}\"\n+++\n"
+                    "+++\nid = \"person:{slug}\"\nkind = \"person\"\npreferred_name = \"{slug}\"\n+++\n"
                 ),
             )
             .expect("person");
