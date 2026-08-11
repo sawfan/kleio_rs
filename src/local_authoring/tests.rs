@@ -1,5 +1,5 @@
 use super::*;
-use crate::RelationshipKind;
+use crate::{NameOrder, RelationshipKind};
 
 #[test]
 fn parses_markdown_with_toml_frontmatter() {
@@ -163,6 +163,15 @@ fn infers_legal_name_from_person_filename_and_uses_preferred_name() {
     assert_eq!(tree.people[0].names.len(), 2);
     assert_eq!(tree.people[0].names[0].usage.as_deref(), Some("preferred"));
     assert_eq!(tree.people[0].names[0].display, "Quincy Smith");
+    assert_eq!(tree.people[0].names[0].given.as_deref(), Some("Quincy"));
+    assert_eq!(tree.people[0].names[0].surname.as_deref(), Some("Smith"));
+    assert_eq!(
+        tree.people[0].names[0]
+            .order
+            .as_ref()
+            .map(NameOrder::as_value),
+        Some(NameOrder::GIVEN_MIDDLE_FAMILY)
+    );
     assert_eq!(tree.people[0].names[1].usage.as_deref(), Some("legal"));
     assert_eq!(
         tree.people[0].names[1].full.as_deref(),
@@ -171,6 +180,307 @@ fn infers_legal_name_from_person_filename_and_uses_preferred_name() {
     assert_eq!(tree.people[0].names[1].given.as_deref(), Some("John"));
     assert_eq!(tree.people[0].names[1].middle.as_deref(), Some("Quincy"));
     assert_eq!(tree.people[0].names[1].surname.as_deref(), Some("Smith"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn supports_family_name_first_preferred_name_order() {
+    let temp_dir = test_temp_dir("family-name-first");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::write(
+        temp_dir.join("entities/people/wang-xiaoming.md"),
+        "+++\nid = \"person:wang-xiaoming\"\nkind = \"person\"\n\n[names.preferred]\ngiven = \"Xiaoming\"\nfamily = \"Wang\"\norder = \"family-given\"\n\n[names.legal]\ngiven = \"Xiaoming\"\nfamily = \"Wang\"\norder = \"family-given\"\n+++\n\n# Wang Xiaoming\n",
+    )
+    .expect("person");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    assert_eq!(
+        tree.person_display_name(tree.people[0].id),
+        Some("Wang Xiaoming")
+    );
+    assert_eq!(tree.people[0].names[0].given.as_deref(), Some("Xiaoming"));
+    assert_eq!(tree.people[0].names[0].surname.as_deref(), Some("Wang"));
+    assert_eq!(
+        tree.people[0].names[0]
+            .order
+            .as_ref()
+            .map(NameOrder::as_value),
+        Some(NameOrder::FAMILY_GIVEN)
+    );
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn married_name_default_does_not_rewrite_family_name_first_display() {
+    let temp_dir = test_temp_dir("married-name-family-first");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/li-wei.md"),
+        "+++\nid = \"person:li-wei\"\nkind = \"person\"\nsex = \"male\"\n\n[names.preferred]\ngiven = \"Wei\"\nfamily = \"Li\"\norder = \"family-given\"\n+++\n\n# Li Wei\n",
+    )
+    .expect("husband");
+    fs::write(
+        temp_dir.join("entities/people/wang-xiaoming.md"),
+        "+++\nid = \"person:wang-xiaoming\"\nkind = \"person\"\nsex = \"female\"\n\n[names.preferred]\ngiven = \"Xiaoming\"\nfamily = \"Wang\"\norder = \"family-given\"\n+++\n\n# Wang Xiaoming\n",
+    )
+    .expect("wife");
+    fs::write(
+        temp_dir.join("relationships/li-wang-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:li-wei\"\ntarget = \"person:wang-xiaoming\"\n",
+    )
+    .expect("spouse relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let wife = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:wang-xiaoming")
+        })
+        .expect("wife");
+
+    assert_eq!(tree.person_display_name(wife.id), Some("Wang Xiaoming"));
+    assert_eq!(wife.names[0].surname.as_deref(), Some("Wang"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn married_woman_defaults_to_husbands_surname_unless_preferred_surname_is_explicit() {
+    let temp_dir = test_temp_dir("married-name-default");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/john-smith.md"),
+        "+++\nid = \"person:john-smith\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# John\n",
+    )
+    .expect("husband");
+    fs::write(
+        temp_dir.join("entities/people/mary-ann-jones.md"),
+        "+++\nid = \"person:mary-ann-jones\"\nkind = \"person\"\npreferred_name = \"Ann\"\nsex = \"female\"\n+++\n\n# Ann\n",
+    )
+    .expect("wife");
+    fs::write(
+        temp_dir.join("relationships/john-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:john-smith\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("spouse relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let wife = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:mary-ann-jones")
+        })
+        .expect("wife");
+
+    assert_eq!(tree.person_display_name(wife.id), Some("Ann Smith"));
+    assert_eq!(wife.names[0].given.as_deref(), Some("Ann"));
+    assert_eq!(wife.names[0].surname.as_deref(), Some("Smith"));
+    assert_eq!(wife.names[1].surname.as_deref(), Some("Jones"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn explicit_preferred_surname_overrides_married_name_default() {
+    let temp_dir = test_temp_dir("married-name-override");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/john-smith.md"),
+        "+++\nid = \"person:john-smith\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# John\n",
+    )
+    .expect("husband");
+    fs::write(
+        temp_dir.join("entities/people/mary-ann-jones.md"),
+        "+++\nid = \"person:mary-ann-jones\"\nkind = \"person\"\nsex = \"female\"\n\n[names.preferred]\nfull = \"Ann Jones\"\ngiven = \"Ann\"\nfamily = \"Jones\"\n+++\n\n# Ann\n",
+    )
+    .expect("wife");
+    fs::write(
+        temp_dir.join("relationships/john-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:john-smith\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("spouse relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let wife = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:mary-ann-jones")
+        })
+        .expect("wife");
+
+    assert_eq!(tree.person_display_name(wife.id), Some("Ann Jones"));
+    assert_eq!(wife.names[0].surname.as_deref(), Some("Jones"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn parent_roles_can_drive_married_name_default_without_sex_fields() {
+    let temp_dir = test_temp_dir("married-name-parent-roles");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/john-smith.md"),
+        "+++\nid = \"person:john-smith\"\nkind = \"person\"\n+++\n\n# John\n",
+    )
+    .expect("father");
+    fs::write(
+        temp_dir.join("entities/people/mary-ann-jones.md"),
+        "+++\nid = \"person:mary-ann-jones\"\nkind = \"person\"\npreferred_name = \"Ann\"\n+++\n\n# Ann\n",
+    )
+    .expect("mother");
+    fs::write(
+        temp_dir.join("entities/people/riley-smith.md"),
+        "+++\nid = \"person:riley-smith\"\nkind = \"person\"\n+++\n\n# Riley\n",
+    )
+    .expect("child");
+    fs::write(
+        temp_dir.join("relationships/john-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:john-smith\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("spouse relationship");
+    fs::write(
+        temp_dir.join("relationships/john-riley-parent.toml"),
+        "relationship = \"biological-parent-child\"\nparent_role = \"father\"\nsource = \"person:john-smith\"\ntarget = \"person:riley-smith\"\n",
+    )
+    .expect("father relationship");
+    fs::write(
+        temp_dir.join("relationships/mary-riley-parent.toml"),
+        "relationship = \"biological-parent-child\"\nparent_role = \"mother\"\nsource = \"person:mary-ann-jones\"\ntarget = \"person:riley-smith\"\n",
+    )
+    .expect("mother relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let mother = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:mary-ann-jones")
+        })
+        .expect("mother");
+
+    assert_eq!(tree.person_display_name(mother.id), Some("Ann Smith"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn former_spouse_does_not_drive_current_married_name_default() {
+    let temp_dir = test_temp_dir("married-name-former-spouse");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-brown.md"),
+        "+++\nid = \"person:alex-brown\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# Alex\n",
+    )
+    .expect("former husband");
+    fs::write(
+        temp_dir.join("entities/people/john-smith.md"),
+        "+++\nid = \"person:john-smith\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# John\n",
+    )
+    .expect("current husband");
+    fs::write(
+        temp_dir.join("entities/people/mary-ann-jones.md"),
+        "+++\nid = \"person:mary-ann-jones\"\nkind = \"person\"\npreferred_name = \"Ann\"\nsex = \"female\"\n+++\n\n# Ann\n",
+    )
+    .expect("wife");
+    fs::write(
+        temp_dir.join("relationships/alex-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:alex-brown\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("old spouse relationship");
+    fs::write(
+        temp_dir.join("relationships/alex-mary-former-spouse.toml"),
+        "relationship = \"former-spouse\"\nsource = \"person:alex-brown\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("former spouse relationship");
+    fs::write(
+        temp_dir.join("relationships/john-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:john-smith\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("current spouse relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let wife = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:mary-ann-jones")
+        })
+        .expect("wife");
+
+    assert_eq!(tree.person_display_name(wife.id), Some("Ann Smith"));
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn ambiguous_multiple_current_spouses_do_not_drive_married_name_default() {
+    let temp_dir = test_temp_dir("married-name-ambiguous-spouses");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::write(
+        temp_dir.join("entities/people/alex-brown.md"),
+        "+++\nid = \"person:alex-brown\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# Alex\n",
+    )
+    .expect("first spouse");
+    fs::write(
+        temp_dir.join("entities/people/john-smith.md"),
+        "+++\nid = \"person:john-smith\"\nkind = \"person\"\nsex = \"male\"\n+++\n\n# John\n",
+    )
+    .expect("second spouse");
+    fs::write(
+        temp_dir.join("entities/people/mary-ann-jones.md"),
+        "+++\nid = \"person:mary-ann-jones\"\nkind = \"person\"\npreferred_name = \"Ann\"\nsex = \"female\"\n+++\n\n# Ann\n",
+    )
+    .expect("wife");
+    fs::write(
+        temp_dir.join("relationships/alex-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:alex-brown\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("first spouse relationship");
+    fs::write(
+        temp_dir.join("relationships/john-mary-spouse.toml"),
+        "relationship = \"spouse\"\nsource = \"person:john-smith\"\ntarget = \"person:mary-ann-jones\"\n",
+    )
+    .expect("second spouse relationship");
+
+    let tree = compile_local_tree(&temp_dir).expect("compile tree");
+    let wife = tree
+        .people
+        .iter()
+        .find(|person| {
+            person
+                .source_record
+                .as_ref()
+                .is_some_and(|source| source.0 == "local:person:mary-ann-jones")
+        })
+        .expect("wife");
+
+    assert_eq!(tree.person_display_name(wife.id), Some("Ann Jones"));
 
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }

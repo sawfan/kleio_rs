@@ -368,6 +368,82 @@ fn format_year(year: i32) -> String {
     serde::Serialize,
     serde::Deserialize,
 )]
+pub struct NameOrder(pub String);
+
+impl NameOrder {
+    pub const GIVEN_FAMILY: &'static str = "given-family";
+    pub const GIVEN_MIDDLE_FAMILY: &'static str = "given-middle-family";
+    pub const FAMILY_GIVEN: &'static str = "family-given";
+    pub const FAMILY_GIVEN_NO_SPACE: &'static str = "family-given-no-space";
+    pub const DISPLAY_ONLY: &'static str = "display-only";
+
+    pub fn new(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        let value = value.trim();
+        (!value.is_empty()).then(|| Self(value.to_string()))
+    }
+
+    pub fn as_value(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn supports_family_name_rewrite(&self) -> bool {
+        matches!(
+            self.as_value(),
+            Self::GIVEN_FAMILY | Self::GIVEN_MIDDLE_FAMILY
+        )
+    }
+
+    pub fn format_parts(
+        &self,
+        given: Option<&str>,
+        middle: Option<&str>,
+        family: Option<&str>,
+    ) -> Option<String> {
+        match self.as_value() {
+            Self::DISPLAY_ONLY => None,
+            Self::FAMILY_GIVEN => join_name_parts([family, given]),
+            Self::FAMILY_GIVEN_NO_SPACE => join_name_parts_without_space([family, given]),
+            Self::GIVEN_FAMILY => join_name_parts([given, family]),
+            Self::GIVEN_MIDDLE_FAMILY => join_name_parts([given, middle, family]),
+            _ => join_name_parts([given, middle, family]),
+        }
+    }
+}
+
+fn join_name_parts<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    let display = parts
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!display.is_empty()).then_some(display)
+}
+
+fn join_name_parts_without_space<'a>(
+    parts: impl IntoIterator<Item = Option<&'a str>>,
+) -> Option<String> {
+    let display = parts
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("");
+    (!display.is_empty()).then_some(display)
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Name {
     /// How this name is used, such as `preferred`, `legal`, `birth`, or
     /// `alternate`.
@@ -385,6 +461,8 @@ pub struct Name {
     #[serde(default)]
     pub middle: Option<String>,
     pub surname: Option<String>,
+    #[serde(default)]
+    pub order: Option<NameOrder>,
 
     /// Alternate spellings, maiden names, etc.
     pub aliases: Vec<String>,

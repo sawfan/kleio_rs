@@ -7,7 +7,7 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{EventId, GenealogyEvent, Name, Person, PersonId, Provenance, Sex};
+use crate::{EventId, GenealogyEvent, Name, NameOrder, Person, PersonId, Provenance, Sex};
 
 #[derive(
     Debug,
@@ -501,6 +501,7 @@ impl TreeDocument {
                 given: None,
                 middle: None,
                 surname: None,
+                order: Some(NameOrder(NameOrder::DISPLAY_ONLY.to_string())),
                 aliases: Vec::new(),
                 provenance: Provenance::default(),
             }],
@@ -560,6 +561,7 @@ impl TreeDocument {
                 given: None,
                 middle: None,
                 surname: None,
+                order: Some(NameOrder(NameOrder::DISPLAY_ONLY.to_string())),
                 aliases: Vec::new(),
                 provenance: Provenance::default(),
             });

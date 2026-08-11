@@ -112,6 +112,12 @@ impl LocalDataBundle {
     pub const COMPILER: &'static str = "kleio-local-authoring/0.1.0";
 }
 
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalRecordNameHints {
+    #[serde(default)]
+    pub explicit_preferred_surname: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalMarkdownRecord {
     pub path: String,
@@ -124,6 +130,8 @@ pub struct LocalMarkdownRecord {
     pub related: Vec<String>,
     pub place: Option<String>,
     pub attributes: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip)]
+    pub name_hints: LocalRecordNameHints,
     pub notes_markdown: String,
 }
 
@@ -469,6 +477,9 @@ fn read_markdown_record(
     let tags = take_string_array(&mut table, "tags", &full_path)?;
     let related = take_string_array(&mut table, "related", &full_path)?;
     let place = take_optional_string(&mut table, "place", &full_path)?;
+    let name_hints = LocalRecordNameHints {
+        explicit_preferred_surname: has_toml_name_table_surname(&table, "preferred"),
+    };
     apply_event_filename_hints(relative_path, &id, &kind, &mut table)?;
     apply_person_filename_hints(relative_path, &kind, &mut table, title.as_deref());
     let attributes = toml_table_to_json_map(table, &full_path)?;
@@ -484,6 +495,7 @@ fn read_markdown_record(
         related,
         place,
         attributes,
+        name_hints,
         notes_markdown: notes_markdown.trim().to_string(),
     })
 }
@@ -526,6 +538,7 @@ struct InferredNameParts {
     given: Option<String>,
     middle: Option<String>,
     family: Option<String>,
+    order: Option<String>,
 }
 
 fn inferred_name_from_person_filename(relative_path: &Path) -> Option<InferredNameParts> {
@@ -572,6 +585,7 @@ fn name_parts_from_words(words: Vec<String>) -> Option<InferredNameParts> {
         given,
         middle,
         family,
+        order: Some("given-middle-family".to_string()),
     })
 }
 
@@ -592,6 +606,24 @@ fn has_name_table(table: &toml::Table, usage: &str) -> bool {
         .is_some()
 }
 
+fn has_toml_name_table_surname(table: &toml::Table, usage: &str) -> bool {
+    table
+        .get("names")
+        .and_then(toml::Value::as_table)
+        .and_then(|names| names.get(usage))
+        .and_then(toml::Value::as_table)
+        .is_some_and(|name| {
+            toml_non_empty_string(name, "family") || toml_non_empty_string(name, "surname")
+        })
+}
+
+fn toml_non_empty_string(table: &toml::Table, key: &str) -> bool {
+    table
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 fn insert_name_table(table: &mut toml::Table, usage: &str, parts: &InferredNameParts) {
     let names = table
         .entry("names".to_string())
@@ -610,6 +642,9 @@ fn insert_name_table(table: &mut toml::Table, usage: &str, parts: &InferredNameP
     }
     if let Some(family) = &parts.family {
         name.insert("family".to_string(), toml::Value::String(family.clone()));
+    }
+    if let Some(order) = &parts.order {
+        name.insert("order".to_string(), toml::Value::String(order.clone()));
     }
     names.insert(usage.to_string(), toml::Value::Table(name));
 }

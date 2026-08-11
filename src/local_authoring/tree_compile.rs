@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    Attribute, DateValue, EventId, GenealogyEvent, GenealogyEventKind, Name, ParentRole, Person,
-    PersonId, Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
+    Attribute, DateValue, EventId, GenealogyEvent, GenealogyEventKind, Name, NameOrder, ParentRole,
+    Person, PersonId, Provenance, RelationshipKind, Sex, SourceRef, Tag, TreeDocument,
 };
 
 use super::{
@@ -59,6 +59,7 @@ pub(super) fn tree_from_local_data_bundle_with_view(
     let mut person_ids = BTreeMap::<String, PersonId>::new();
     let mut person_names = BTreeMap::<String, String>::new();
     let mut person_sexes = BTreeMap::<String, Sex>::new();
+    let mut explicit_preferred_surnames = BTreeSet::<String>::new();
     for record in bundle
         .markdown_records
         .iter()
@@ -75,6 +76,9 @@ pub(super) fn tree_from_local_data_bundle_with_view(
             .map(parse_sex);
         if let Some(sex) = &sex {
             person_sexes.insert(record.id.clone(), sex.clone());
+        }
+        if has_explicit_preferred_surname(record) {
+            explicit_preferred_surnames.insert(record.id.clone());
         }
         let mut provenance = local_record_provenance(record);
         provenance.tags.extend(record.tags.iter().cloned().map(Tag));
@@ -247,6 +251,13 @@ pub(super) fn tree_from_local_data_bundle_with_view(
         }
     }
 
+    apply_standard_married_name_defaults(
+        &mut tree,
+        &person_ids,
+        &person_sexes,
+        &explicit_preferred_surnames,
+    );
+
     if let Some(main_person) = tree_view
         .and_then(|document| document.data.get("root"))
         .and_then(|root| root.get("entity"))
@@ -291,6 +302,190 @@ fn relationship_parent_role(
         .and_then(serde_json::Value::as_str)
         .and_then(ParentRole::from_value)
         .or_else(|| person_sexes.get(source_key).and_then(ParentRole::from_sex))
+}
+
+fn apply_standard_married_name_defaults(
+    tree: &mut TreeDocument,
+    person_ids: &BTreeMap<String, PersonId>,
+    person_sexes: &BTreeMap<String, Sex>,
+    explicit_preferred_surnames: &BTreeSet<String>,
+) {
+    let person_keys_by_id = person_ids
+        .iter()
+        .map(|(key, id)| (*id, key.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let effective_person_sexes = effective_person_sexes(tree, person_ids, person_sexes);
+    let former_spouse_pairs = tree
+        .relationships
+        .iter()
+        .filter(|relationship| relationship.kind == RelationshipKind::FormerSpouse)
+        .map(|relationship| ordered_person_pair(relationship.source, relationship.target))
+        .collect::<BTreeSet<_>>();
+    let spouse_pairs = tree
+        .relationships
+        .iter()
+        .filter(|relationship| relationship.kind == RelationshipKind::Spouse)
+        .filter(|relationship| {
+            !former_spouse_pairs.contains(&ordered_person_pair(
+                relationship.source,
+                relationship.target,
+            ))
+        })
+        .map(|relationship| (relationship.source, relationship.target))
+        .collect::<Vec<_>>();
+    let mut surname_sources_by_person = BTreeMap::<PersonId, Vec<PersonId>>::new();
+
+    for (source, target) in spouse_pairs {
+        let Some(source_key) = person_keys_by_id.get(&source).copied() else {
+            continue;
+        };
+        let Some(target_key) = person_keys_by_id.get(&target).copied() else {
+            continue;
+        };
+
+        match (
+            effective_person_sexes.get(source_key),
+            effective_person_sexes.get(target_key),
+        ) {
+            (Some(Sex::Female), Some(Sex::Male)) => surname_sources_by_person
+                .entry(source)
+                .or_default()
+                .push(target),
+            (Some(Sex::Male), Some(Sex::Female)) => surname_sources_by_person
+                .entry(target)
+                .or_default()
+                .push(source),
+            _ => {}
+        }
+    }
+
+    for (person_id, spouse_ids) in surname_sources_by_person {
+        let [spouse_id] = spouse_ids.as_slice() else {
+            continue;
+        };
+        let Some(person_key) = person_keys_by_id.get(&person_id).copied() else {
+            continue;
+        };
+        inherit_spouse_surname(
+            tree,
+            person_id,
+            *spouse_id,
+            person_key,
+            explicit_preferred_surnames,
+        );
+    }
+}
+
+fn ordered_person_pair(first: PersonId, second: PersonId) -> (PersonId, PersonId) {
+    if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+fn effective_person_sexes(
+    tree: &TreeDocument,
+    person_ids: &BTreeMap<String, PersonId>,
+    person_sexes: &BTreeMap<String, Sex>,
+) -> BTreeMap<String, Sex> {
+    let mut effective = person_sexes.clone();
+    let person_keys_by_id = person_ids
+        .iter()
+        .map(|(key, id)| (*id, key.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    for relationship in &tree.relationships {
+        let Some(parent_role) = relationship.parent_role else {
+            continue;
+        };
+        let Some(person_key) = person_keys_by_id.get(&relationship.source) else {
+            continue;
+        };
+        let sex = match parent_role {
+            ParentRole::Father => Sex::Male,
+            ParentRole::Mother => Sex::Female,
+            ParentRole::Parent | ParentRole::Unknown => continue,
+        };
+        effective.entry((*person_key).to_string()).or_insert(sex);
+    }
+
+    effective
+}
+
+fn inherit_spouse_surname(
+    tree: &mut TreeDocument,
+    person_id: PersonId,
+    spouse_id: PersonId,
+    person_key: &str,
+    explicit_preferred_surnames: &BTreeSet<String>,
+) {
+    if explicit_preferred_surnames.contains(person_key) {
+        return;
+    }
+
+    let Some(spouse_surname) = tree
+        .people
+        .iter()
+        .find(|person| person.id == spouse_id)
+        .and_then(primary_surname)
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
+
+    let Some(person) = tree.people.iter_mut().find(|person| person.id == person_id) else {
+        return;
+    };
+    let Some(preferred_index) = preferred_name_index(person) else {
+        return;
+    };
+
+    let preferred = &mut person.names[preferred_index];
+    if preferred.surname.as_deref() == Some(spouse_surname.as_str()) {
+        return;
+    }
+
+    preferred.surname = Some(spouse_surname);
+    update_name_display_from_parts(preferred);
+}
+
+fn preferred_name_index(person: &Person) -> Option<usize> {
+    person
+        .names
+        .iter()
+        .position(|name| name.usage.as_deref() == Some("preferred"))
+        .or_else(|| (!person.names.is_empty()).then_some(0))
+}
+
+fn primary_surname(person: &Person) -> Option<&str> {
+    person
+        .names
+        .iter()
+        .find(|name| name.usage.as_deref() == Some("preferred"))
+        .and_then(|name| name.surname.as_deref())
+        .or_else(|| person.names.iter().find_map(|name| name.surname.as_deref()))
+}
+
+fn update_name_display_from_parts(name: &mut Name) {
+    if let Some(order) = name.order.as_ref()
+        && !order.supports_family_name_rewrite()
+    {
+        return;
+    }
+
+    let order = name
+        .order
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| NameOrder(NameOrder::GIVEN_MIDDLE_FAMILY.to_string()));
+    if let Some(display) = order.format_parts(
+        name.given.as_deref(),
+        name.middle.as_deref(),
+        name.surname.as_deref(),
+    ) {
+        name.display = display;
+    }
 }
 
 fn select_tree_view<'a>(
@@ -487,18 +682,29 @@ fn name_table_string(table: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn name_order_from_table(table: &serde_json::Value) -> Option<NameOrder> {
+    name_table_string(table, "order").and_then(NameOrder::new)
+}
+
+fn has_explicit_preferred_surname(record: &LocalMarkdownRecord) -> bool {
+    record.name_hints.explicit_preferred_surname
+}
+
 fn name_display_from_table(table: &serde_json::Value) -> Option<String> {
     name_table_string(table, "display")
         .or_else(|| name_table_string(table, "full"))
         .or_else(|| {
             let given = name_table_string(table, "given");
+            let middle = name_table_string(table, "middle");
             let family = name_table_string(table, "family");
-            match (given, family) {
-                (Some(given), Some(family)) => Some(format!("{given} {family}")),
-                (Some(given), None) => Some(given),
-                (None, Some(family)) => Some(family),
-                (None, None) => None,
-            }
+            let surname = name_table_string(table, "surname");
+            let order = name_order_from_table(table)
+                .unwrap_or_else(|| NameOrder(NameOrder::GIVEN_MIDDLE_FAMILY.to_string()));
+            order.format_parts(
+                given.as_deref(),
+                middle.as_deref(),
+                family.or(surname).as_deref(),
+            )
         })
 }
 
@@ -510,6 +716,7 @@ fn name_from_table(usage: &str, table: &serde_json::Value, provenance: Provenanc
         given: name_table_string(table, "given"),
         middle: name_table_string(table, "middle"),
         surname: name_table_string(table, "family").or_else(|| name_table_string(table, "surname")),
+        order: name_order_from_table(table),
         aliases: string_array_attribute(table.get("aliases")),
         provenance,
     })
@@ -538,6 +745,7 @@ fn person_names_from_record(record: &LocalMarkdownRecord, display: String) -> Ve
             given: markdown_given(record),
             middle: legal_name_table(record).and_then(|legal| name_table_string(legal, "middle")),
             surname: markdown_surname(record),
+            order: Some(NameOrder(NameOrder::GIVEN_MIDDLE_FAMILY.to_string())),
             aliases: string_array_attribute(record.attributes.get("aliases")),
             provenance,
         });
@@ -581,7 +789,7 @@ fn markdown_surname(record: &LocalMarkdownRecord) -> Option<String> {
                 .attributes
                 .get("names")
                 .and_then(|names| names.get("preferred"))
-                .and_then(|preferred| preferred.get("family"))
+                .and_then(|preferred| preferred.get("family").or_else(|| preferred.get("surname")))
                 .and_then(serde_json::Value::as_str)
         })
         .map(ToOwned::to_owned)
