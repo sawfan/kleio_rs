@@ -168,12 +168,33 @@ id = "{}"
 kind = "{}"
 title = "{}"
 {}
+[projection]
+# Tree views are projections of the genealogy relationship graph, not stored trees.
+relationship_kinds = ["biological-parent-child", "adoptive-parent-child", "foster-parent-child", "step-parent-child", "guardian-child", "spouse", "partner", "former-spouse", "sibling"]
+generations_up = 5
+generations_down = 3
+include_partners = true
+include_siblings = false
+include_unconnected = false
+
+[layout]
+algorithm = "hourglass"
+orientation = "top-down"
+
+[node]
+content = "summary"
+show_life_dates = true
+show_places = true
+show_sources = false
+
 [filter]
+# Legacy aliases retained for current compilers; prefer [projection] above.
 relationship_kinds = ["biological-parent-child", "adoptive-parent-child", "foster-parent-child", "step-parent-child", "guardian-child", "spouse", "partner", "former-spouse", "sibling"]
 generations_up = 5
 generations_down = 3
 
 [display]
+# Legacy display aliases retained for current UI; prefer [node] above.
 show_life_dates = true
 show_places = true
 show_sources = false

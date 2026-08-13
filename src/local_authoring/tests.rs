@@ -959,7 +959,7 @@ fn filters_tree_view_by_configured_generations() {
     }
     fs::write(
         temp_dir.join("views/trees/root-tree.toml"),
-        "schema_version = 1\nid = \"tree:root-tree\"\nkind = \"tree-view\"\ntitle = \"Root tree\"\n\n[root]\nentity = \"person:root\"\n\n[filter]\nrelationship_kinds = [\"biological-parent-child\"]\ngenerations_up = 1\ngenerations_down = 1\n",
+        "schema_version = 1\nid = \"tree:root-tree\"\nkind = \"tree-view\"\ntitle = \"Root tree\"\n\n[root]\nentity = \"person:root\"\n\n[projection]\nrelationship_kinds = [\"biological-parent-child\"]\ngenerations_up = 1\ngenerations_down = 1\ninclude_partners = false\ninclude_siblings = false\ninclude_unconnected = false\n",
     )
     .expect("tree view");
 
@@ -977,6 +977,54 @@ fn filters_tree_view_by_configured_generations() {
     assert!(!names.contains(&"grandparent"));
     assert!(!names.contains(&"grandchild"));
     assert_eq!(tree.relationships.len(), 2);
+
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn tree_view_projection_can_include_siblings_without_unconnected_people() {
+    let temp_dir = test_temp_dir("tree-projection-siblings");
+    fs::create_dir_all(temp_dir.join("entities/people")).expect("people dir");
+    fs::create_dir_all(temp_dir.join("relationships")).expect("relationships dir");
+    fs::create_dir_all(temp_dir.join("views/trees")).expect("tree views dir");
+    for slug in ["parent", "root", "sibling", "unrelated"] {
+        fs::write(
+            temp_dir.join(format!("entities/people/{slug}.md")),
+            format!(
+                "+++\nid = \"person:{slug}\"\nkind = \"person\"\npreferred_name = \"{slug}\"\n+++\n\n# Note\n"
+            ),
+        )
+        .expect("person");
+    }
+    for (slug, source, target) in [
+        ("parent-root", "person:parent", "person:root"),
+        ("parent-sibling", "person:parent", "person:sibling"),
+    ] {
+        fs::write(
+            temp_dir.join(format!("relationships/{slug}.toml")),
+            format!(
+                "id = \"relationship:{slug}\"\nkind = \"relationship\"\nrelationship = \"biological-parent-child\"\nsource = \"{source}\"\ntarget = \"{target}\"\n"
+            ),
+        )
+        .expect("relationship");
+    }
+    fs::write(
+        temp_dir.join("views/trees/root-tree.toml"),
+        "schema_version = 1\nid = \"tree:root-tree\"\nkind = \"tree-view\"\ntitle = \"Root tree\"\n\n[root]\nentity = \"person:root\"\n\n[projection]\nrelationship_kinds = [\"biological-parent-child\"]\ngenerations_up = 1\ngenerations_down = 0\ninclude_partners = false\ninclude_siblings = true\ninclude_unconnected = false\n",
+    )
+    .expect("tree view");
+
+    let tree = compile_local_tree_with_view(&temp_dir, Some("root-tree")).expect("compile tree");
+    let names = tree
+        .people
+        .iter()
+        .filter_map(|person| tree.person_display_name(person.id))
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"parent"));
+    assert!(names.contains(&"sibling"));
+    assert!(!names.contains(&"unrelated"));
 
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }

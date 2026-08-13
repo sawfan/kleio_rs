@@ -365,12 +365,27 @@ pub fn compile_local_trees_document(
     compile_local_tree(source_root).map(LocalTreesDocument::from_tree)
 }
 
+pub fn compile_local_trees_document_with_view(
+    source_root: impl AsRef<Path>,
+    view_slug: Option<&str>,
+) -> Result<LocalTreesDocument, LocalAuthoringError> {
+    compile_local_tree_with_view(source_root, view_slug).map(LocalTreesDocument::from_tree)
+}
+
 pub fn write_local_trees_document_json(
     source_root: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
 ) -> Result<LocalTreesDocument, LocalAuthoringError> {
+    write_local_trees_document_json_with_view(source_root, None, output_path)
+}
+
+pub fn write_local_trees_document_json_with_view(
+    source_root: impl AsRef<Path>,
+    view_slug: Option<&str>,
+    output_path: impl AsRef<Path>,
+) -> Result<LocalTreesDocument, LocalAuthoringError> {
     let output_path = output_path.as_ref();
-    let document = compile_local_trees_document(source_root)?;
+    let document = compile_local_trees_document_with_view(source_root, view_slug)?;
     let json =
         serde_json::to_string_pretty(&document).map_err(|source| LocalAuthoringError::Json {
             path: output_path.to_path_buf(),
